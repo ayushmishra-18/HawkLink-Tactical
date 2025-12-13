@@ -2,199 +2,207 @@
 
 
 
-**HawkLink Tactical System** is a **dual-application tactical situational awareness platform** built with **Flutter**, designed for secure command-to-unit coordination in disconnected or low-infrastructure environments.
-
-
-
-## **📡 System Overview**
-
-
-
-This repository contains two independent yet interconnected applications:
-
-
-
-### 🖥️ **Commander Console (Desktop)**
-
-
-
-* ###### Cross-platform support: **Windows / Linux / macOS**
+###### A secure, offline-first Command \& Control (C2) platform for tactical situational awareness.
 
 ###### 
 
-* ###### Acts as a **TCP Server** for managing connected units
+###### HawkLink allows commanders to coordinate field units in real-time without relying on the internet or cellular infrastructure. It uses a secure local TCP mesh to transmit GPS, orders, and intelligence data.
+
+
+
+## **📡 System Interface**
+
+
+
+###### This repository contains two independent yet interconnected applications:
+
+
+
+### **🖥️ Commander Console (Desktop)**
+
+
+
+###### The tactical "God View" running on Windows. Features 3D satellite terrain, unit tracking, and waypoint management.
+
+
+
+
+
+Screenshot:-
+Command\_Console :- [Command](commander_console/assets/screenshot/command_console)
+---
+
+
+
+### **📱 Soldier Uplink (Mobile)**
+
+
+
+###### The field operative's view. Features GPS tracking, SOS beacon, stealth mode, and secure comms.
+
+
+
+###### Screenshot:-
+
+###### Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1)
+
+
+
+
+
+### **✨ Key Features**
+
+
+
+#### **📡 Core Architecture**
+
+
+
+* ###### Offline-First: Works over Local Wi-Fi, Hotspot, or Mesh VPN (Tailscale). No internet required.
 
 ###### 
 
-* ###### **3D Satellite Map** with tactical plotting \& unit visualization
+* ###### Secure TCP Mesh: Custom encrypted socket protocol for low-latency data transmission.
 
 ###### 
 
-* ###### Designed for command-level decision making
-
-
-
-###### 📁 Location: commander\_console/
-
-
-
-### 📱 **Soldier Uplink (Mobile)**
-
-
-
-* ###### Cross-platform support: **Android / iOS**
+* ###### AES-256 Encryption: All data (chat, location, images) is encrypted before transmission.
 
 ###### 
 
-* ###### Real-time **GPS tracking**
+* ###### Cross-Platform: Commander (Windows/Linux/Mac) + Soldier (Android/iOS).
+
+
+
+#### **🖥️ Commander Console View (Desktop)**
+
+
+
+* ###### 3D Satellite Map: Tilt and rotate the battlefield for tactical terrain analysis.
 
 ###### 
 
-* ###### **SOS / Emergency Beacon**
+* ###### Real-Time Unit Tracking: Live position updates with Breadcrumb Trails.
 
 ###### 
 
-* ###### **Secure TCP uplink** to Commander Console
+* ###### Biometric Feed: Monitors soldier heart rate (BPM) and battery levels.
 
 ###### 
 
-* ###### Built for field deployment and low-bandwidth usage
-
-
-
-###### 📁 Location: soldier\_app/
-
-
-
-# **✨ Key Features**
-
-
-
-
-
-## **Commander Console**
-
-### 
-
-* ###### 🗺️ Interactive 3D terrain-based map
+* ###### Tactical Waypoints: Drop drag-and-drop markers:
 
 ###### 
 
-* ###### 📍 Live unit tracking
+###### &nbsp;	1. 🏁 Rally Point
+
+###### &nbsp;	2. 💀 Enemy Contact
+
+###### &nbsp;	3. 🏥 Medical Cache
+
+###### &nbsp;	4. 🚁 Landing Zone (LZ)
 
 ###### 
 
-* ###### 🧭 Tactical command plotting
+* ###### Geofencing: Draw custom "Red Zones" (Danger Areas). Automatically warns soldiers if they enter.
 
 ###### 
 
-* ###### ✅ Command acknowledgment monitoring
-
-### 
-
-## **Soldier Uplink**
-
-### 
-
-* ###### 📡 Real-time GPS updates
+* ###### Intel Hub: Receives and displays encrypted images from field units.
 
 ###### 
 
-* ###### 🆘 Emergency SOS beacon
+* ###### Persistent Logs: Automatically saves chat history and intel to disk.
+
+
+
+#### **📱 Soldier Uplink View (Mobile)**
+
+
+
+* ###### Role-Based Warfare: Select classes (Medic, Sniper, Scout, Engineer) with unique icons.
 
 ###### 
 
-* ###### 🔒 Secure uplink to command
+* ###### Compass Vision: Transmits real-time magnetic heading (Cone of Vision) to the commander.
 
 ###### 
 
-* ###### 🔋 Battery-efficient background operation
-
-
-
-
-
-
-
-
-
-## **📸 System Screenshots**
-
-### 
-
-### **🖥️ Commander Console View (Desktop)**
-
-### 
-
-###### [**Commander Console**](assets/screenshots/commander/commander_console.png)
-
-
-
-
-
-##### **Commander-side dashboard showing live unit positions, tactical map view, and network activity.**
-
-### 
-
-### **---**
-
-### 
-
-### **📱 Soldier Uplink View (Mobile)**
-
-### 
-
-###### [**Soldier Uplink – Alpha-1**](assets/screenshots/soldier/soldier_1.jpg)
-
-
-
-##### **Field unit (ALPHA-1) with secure uplink, live GPS position, and quick-access tactical controls.**
-
-### 
-
-###### [**Soldier Uplink – Alpha-2**](assets/screenshots/soldier/soldier_2.jpg)
-
-### 
-
-##### **Second field unit (ALPHA-2) operating simultaneously under the same command network.**
-
-
-
-
-
-## **🚀** **Getting Started**
-
-
-
-### **🔧 Prerequisites**
-
-
-
-#### **Ensure the following tools are installed:**
-
-
-
-* ###### Flutter SDK
+* ###### Tactical Cam: Snap and send encrypted photos directly to HQ.
 
 ###### 
 
+* ###### Stealth Mode: One-tap toggle to switch UI to OLED Black/Red for night vision compatibility.
+
+###### 
+
+* ###### Voice Command (TTS): Reads orders out loud ("New Order: Move to Sector 4").
+
+###### 
+
+* ###### SOS Beacon: Emergency panic button that triggers a fleet-wide alert.
+
+###### 
+
+* ###### Order Acknowledgment: "COPY THAT" button to confirm receipt of orders.
+
+
+
+#### **🚀 Getting Started**
+
+
+
+##### **🔧 Prerequisites**
+
+
+
+###### 
+
+* ###### Flutter SDK(3.0+)
 * ###### Visual Studio (required for Windows desktop builds)
-
-###### 
-
 * ###### Android Studio (required for mobile builds)
 
-###### 
 
-##### **▶️ Running the Commander Console**
+
+
+
+##### **▶️ 1. Installation**
+
+
+
+###### Clone the repository:
 
 
 
 ```
 
-cd commander\_console
+git clone \[https://github.com/ayushmishra-18/HawkLink-Tactical.git](https://github.com/ayushmishra-18/HawkLink-Tactical.git)
+
+cd HawkLink-Tactical
+
+```
+
+
+
+
+
+##### **▶️ 2.Running the Commander Console(Server)**
+
+
+
+###### The Commander Console acts as the server. Run this first on your laptop.
+
+
+
+```
+
+cd commander\\\_console
+
+
 
 flutter pub get
+
+
 
 flutter run -d windows
 
@@ -202,21 +210,29 @@ flutter run -d windows
 
 
 
-
-
 ###### 💡 Replace windows with linux or macos depending on your platform.
 
+###### Note the IP address displayed on the left panel (e.g., 192.168.1.5).
 
 
-##### **▶️** **Running the Soldier App**
+
+##### **▶️ 3.Running the Soldier App(Client)**
+
+
+
+###### Run this on an Android device or emulator.
 
 
 
 ```
 
-cd soldier\_app
+cd soldier\\\_app
+
+
 
 flutter pub get
+
+
 
 flutter run -d android
 
@@ -224,17 +240,13 @@ flutter run -d android
 
 
 
-
-
-###### 📱 Ensure an Android emulator or physical device is connected.
-
+###### Enter the Commander's IP address and click the Link icon to connect.
 
 
 
+#### **🧪 Potential Applications**
 
-# 🧪 Potential Applications
 
-### 
 
 * ###### Military \& defense operations
 
@@ -254,41 +266,37 @@ flutter run -d android
 
 * ###### Emergency services \& law enforcement
 
+###### 
+
+#### **🛠️ Tech Stack**
 
 
 
-
-
-
-
-
-# 🧩 Tech Stack
-
-
-
-* ###### Flutter (Desktop + Mobile)
+* ###### Framework: Flutter (Dart)
 
 ###### 
 
-* ###### TCP Socket Communication
+* ###### Maps: flutter\_map + latlong2 (ArcGIS Satellite Tiles)
 
 ###### 
 
-* ###### 3D Map Visualization
+* ###### Networking: Raw TCP Sockets (dart:io)
 
 ###### 
 
-* ###### Cross-platform deployment
+* ###### Security: encrypt (AES-CBC)
+
+###### 
+
+* ###### Sensors: geolocator, flutter\_compass, battery\_plus
+
+###### 
+
+* ###### Audio/Media: audioplayers, flutter\_tts, image\_picker
 
 
 
-
-
-
-
-
-
-## **🛡️ Project Focus**
+#### **🛡️ Project Focus**
 
 
 
@@ -308,13 +316,9 @@ flutter run -d android
 
 
 
+#### **🏆 Why HawkLink Stands Out**
 
 
-
-
-# 🏆 Why HawkLink Stands Out
-
-###### 
 
 * ###### ❌ No internet dependency
 
@@ -334,10 +338,11 @@ flutter run -d android
 
 * ###### ⚔️ Replaces error-prone voice radio commands
 
-###### 
 
-# 📜 Note
 
-###### 
+#### **📜 Note**
 
-* ###### This project is developed for educational, research, and hackathon demonstration purposes.
+
+
+###### This project is developed for educational, research, and hackathon demonstration purposes.
+
