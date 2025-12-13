@@ -94,11 +94,15 @@ This repository contains two independent yet interconnected applications:
 
 
 
+```
+
 cd commander\_console
 
 flutter pub get
 
 flutter run -d windows
+
+```
 
 
 
@@ -112,11 +116,15 @@ flutter run -d windows
 
 
 
+```
+
 cd soldier\_app
 
 flutter pub get
 
 flutter run -d android
+
+```
 
 
 
