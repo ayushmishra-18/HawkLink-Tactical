@@ -9,6 +9,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:intl/intl.dart';
 import 'package:encrypt/encrypt.dart' as enc;
 import 'package:audioplayers/audioplayers.dart';
+import 'package:path_provider/path_provider.dart';
 
 // --- CONFIGURATION ---
 const int kPort = 4444;
@@ -82,14 +83,16 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   List<String> _myIps = [];
   final TextEditingController _cmdController = TextEditingController();
 
-  // AUDIO: Separate players
+  // AUDIO
   final AudioPlayer _sfxPlayer = AudioPlayer();
   final AudioPlayer _alertPlayer = AudioPlayer();
 
+  // ENCRYPTION
   final _key = enc.Key.fromUtf8(kPreSharedKey);
   final _iv = enc.IV.fromUtf8(kFixedIV);
   late final _encrypter = enc.Encrypter(enc.AES(_key));
 
+  // MAP & ANIMATION
   final MapController _mapController = MapController();
   late AnimationController _pulseController;
   String? _selectedUnitId;
@@ -98,6 +101,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   double _tilt = 0.0;
   double _rotation = 0.0;
 
+  // DRAWING
   bool _isDrawingMode = false;
   List<LatLng> _tempDrawPoints = [];
   List<LatLng> _activeDangerZone = [];
@@ -107,6 +111,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     super.initState();
     _startServer();
     _getLocalIps();
+    _loadLogs(); // Load history
     _pulseController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat();
   }
 
@@ -116,6 +121,31 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     _alertPlayer.dispose();
     _pulseController.dispose();
     super.dispose();
+  }
+
+  // --- LOG PERSISTENCE ---
+  Future<File> _getLogFile() async {
+    final directory = await getApplicationDocumentsDirectory();
+    return File('${directory.path}/hawklink_logs.txt');
+  }
+
+  Future<void> _loadLogs() async {
+    try {
+      final file = await _getLogFile();
+      if (await file.exists()) {
+        final contents = await file.readAsLines();
+        setState(() {
+          _logs.addAll(contents.reversed.take(100));
+        });
+      }
+    } catch (e) {}
+  }
+
+  Future<void> _saveLog(String logEntry) async {
+    try {
+      final file = await _getLogFile();
+      await file.writeAsString('$logEntry\n', mode: FileMode.append);
+    } catch (e) {}
   }
 
   // --- AUDIO LOGIC ---
@@ -139,6 +169,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     }
   }
 
+  // --- NETWORKING ---
   Future<void> _getLocalIps() async {
     try {
       final interfaces = await NetworkInterface.list(type: InternetAddressType.IPv4);
@@ -215,11 +246,14 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   }
 
   void _log(String sender, String msg) {
+    String timestamp = DateFormat('HH:mm:ss').format(DateTime.now());
+    bool isAck = msg.contains("RECEIVED") || msg.contains("COPY");
+    String prefix = isAck ? "✅ " : "";
+    String entry = "$prefix[$timestamp] $sender: $msg";
     setState(() {
-      bool isAck = msg.contains("RECEIVED") || msg.contains("COPY");
-      String prefix = isAck ? "✅ " : "";
-      _logs.insert(0, "$prefix[${DateFormat('HH:mm:ss').format(DateTime.now())}] $sender: $msg");
+      _logs.insert(0, entry);
     });
+    _saveLog(entry);
   }
 
   void _broadcastOrder(String text) {
@@ -284,6 +318,22 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     }
   }
 
+  // --- VISION CONE HELPER (ADDED BACK) ---
+  List<LatLng> _createVisionCone(LatLng center, double heading) {
+    double radius = 0.0005; // Approx 50m
+    double angleRad = heading * (math.pi / 180);
+    double coneWidth = 45 * (math.pi / 180);
+    return [
+      center,
+      LatLng(center.latitude + radius * math.cos(angleRad - coneWidth/2), center.longitude + radius * math.sin(angleRad - coneWidth/2)),
+      LatLng(center.latitude + radius * math.cos(angleRad), center.longitude + radius * math.sin(angleRad)),
+      LatLng(center.latitude + radius * math.cos(angleRad + coneWidth/2), center.longitude + radius * math.sin(angleRad + coneWidth/2)),
+      center
+    ];
+  }
+
+  // --- UI COMPONENTS ---
+
   Widget _buildGlassPanel({required Widget child, double width = 350}) {
     return ClipRect(
       child: Container(
@@ -319,20 +369,6 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
         Text("IP: ${_myIps.isNotEmpty ? _myIps.first : 'SCANNING...'}", style: const TextStyle(color: Colors.white54, fontSize: 12)),
       ]),
     );
-  }
-
-  // --- HELPER: VISION CONE (FIXED LOCATION) ---
-  List<LatLng> _createVisionCone(LatLng center, double heading) {
-    double radius = 0.0005;
-    double angleRad = heading * (math.pi / 180);
-    double coneWidth = 45 * (math.pi / 180);
-    return [
-      center,
-      LatLng(center.latitude + radius * math.cos(angleRad - coneWidth/2), center.longitude + radius * math.sin(angleRad - coneWidth/2)),
-      LatLng(center.latitude + radius * math.cos(angleRad), center.longitude + radius * math.sin(angleRad)),
-      LatLng(center.latitude + radius * math.cos(angleRad + coneWidth/2), center.longitude + radius * math.sin(angleRad + coneWidth/2)),
-      center
-    ];
   }
 
   @override

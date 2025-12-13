@@ -10,7 +10,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:flutter_compass/flutter_compass.dart'; // NEW
+import 'package:flutter_compass/flutter_compass.dart';
 
 // --- CONFIGURATION ---
 const int kPort = 4444;
@@ -65,7 +65,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   final TextEditingController _ipController = TextEditingController(text: "192.168.1.X");
   final TextEditingController _idController = TextEditingController(text: "ALPHA-1");
 
-  // NEW: ROLE SELECTION
+  // ROLE SELECTION
   String _selectedRole = "ASSAULT";
   final List<String> _roles = ["ASSAULT", "MEDIC", "SCOUT", "SNIPER", "ENGINEER"];
 
@@ -78,7 +78,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   // SENSORS
   final MapController _mapController = MapController();
   LatLng _myLocation = const LatLng(40.7128, -74.0060);
-  double _heading = 0.0; // NEW: Compass Heading
+  double _heading = 0.0;
   List<Marker> _targetMarkers = [];
   bool _hasFix = false;
   Timer? _heartbeatTimer;
@@ -97,7 +97,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     super.initState();
     _sosController = AnimationController(vsync: this, duration: const Duration(milliseconds: 500));
     _startGpsTracking();
-    _startCompass(); // NEW
+    _startCompass();
     _initTts();
 
     _biometricTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
@@ -151,7 +151,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     });
   }
 
-  // NEW: COMPASS LISTENER
   void _startCompass() {
     FlutterCompass.events?.listen((CompassEvent event) {
       if (mounted) {
@@ -201,7 +200,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       );
 
       _heartbeatTimer?.cancel();
-      _heartbeatTimer = Timer.periodic(const Duration(seconds: 1), (timer) => _sendHeartbeat()); // Fast updates
+      _heartbeatTimer = Timer.periodic(const Duration(seconds: 1), (timer) => _sendHeartbeat());
     } catch (e) {
       if (mounted) setState(() { _status = "FAILED TO CONNECT"; _socket = null; });
     }
@@ -249,9 +248,9 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       _sendPacket({
         'type': 'STATUS',
         'id': _idController.text.toUpperCase(),
-        'role': _selectedRole, // SEND ROLE
+        'role': _selectedRole,
         'lat': _myLocation.latitude, 'lng': _myLocation.longitude,
-        'head': _heading,      // SEND HEADING
+        'head': _heading,
         'bat': bat, 'state': state, 'bpm': _heartRate,
       });
     } catch (e) { /* ignore */ }
@@ -330,7 +329,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
             colorFilter: widget.isStealth ? const ColorFilter.mode(Colors.black, BlendMode.saturation) : const ColorFilter.mode(Colors.transparent, BlendMode.multiply),
             child: FlutterMap(
               mapController: _mapController,
-              options: MapOptions(initialCenter: _hasFix ? _myLocation : const LatLng(40.7128, -74.0060), initialZoom: 15, initialRotation: _heading), // Rotate map with user
+              options: MapOptions(initialCenter: _hasFix ? _myLocation : const LatLng(40.7128, -74.0060), initialZoom: 15, initialRotation: _heading),
               children: [
                 TileLayer(urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', userAgentPackageName: 'com.hawklink.soldier'),
                 PolygonLayer(polygons: [if (_dangerZone.isNotEmpty) Polygon(points: _dangerZone, color: Colors.red.withOpacity(0.3), borderColor: Colors.redAccent, borderStrokeWidth: 4, isFilled: true)]),
@@ -349,6 +348,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
                   padding: const EdgeInsets.all(12), margin: const EdgeInsets.all(12),
                   decoration: BoxDecoration(color: Colors.black.withOpacity(0.9), border: Border.all(color: isSOS ? Colors.red : primaryColor), borderRadius: BorderRadius.circular(8)),
                   child: Column(children: [
+                    // --- LOGO REMOVED HERE ---
                     Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                       Text("UPLINK: $_status", style: TextStyle(color: _socket != null ? primaryColor : Colors.red, fontWeight: FontWeight.bold, fontSize: 10)),
                       IconButton(icon: Icon(widget.isStealth ? Icons.visibility_off : Icons.visibility, color: primaryColor), onPressed: widget.onToggleStealth)
