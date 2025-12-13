@@ -10,6 +10,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:flutter_compass/flutter_compass.dart'; // NEW
 
 // --- CONFIGURATION ---
 const int kPort = 4444;
@@ -59,32 +60,31 @@ class UplinkScreen extends StatefulWidget {
 }
 
 class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderStateMixin {
-  // NETWORKING
   Socket? _socket;
   String _status = "DISCONNECTED";
   final TextEditingController _ipController = TextEditingController(text: "192.168.1.X");
   final TextEditingController _idController = TextEditingController(text: "ALPHA-1");
 
-  // STATE
+  // NEW: ROLE SELECTION
+  String _selectedRole = "ASSAULT";
+  final List<String> _roles = ["ASSAULT", "MEDIC", "SCOUT", "SNIPER", "ENGINEER"];
+
   List<Map<String, dynamic>> _messages = [];
   bool _hasUnread = false;
   List<LatLng> _dangerZone = [];
   bool _isInDanger = false;
+  Map<String, dynamic>? _pendingOrder;
 
-  // NEW: PERSISTENT ORDER STATE
-  Map<String, dynamic>? _pendingOrder; // Holds the current unacknowledged order
-
-  // BIOMETRICS
-  int _heartRate = 75;
-  Timer? _biometricTimer;
-
-  // SENSORS & MAP
+  // SENSORS
   final MapController _mapController = MapController();
   LatLng _myLocation = const LatLng(40.7128, -74.0060);
+  double _heading = 0.0; // NEW: Compass Heading
   List<Marker> _targetMarkers = [];
   bool _hasFix = false;
   Timer? _heartbeatTimer;
   final Battery _battery = Battery();
+  int _heartRate = 75;
+  Timer? _biometricTimer;
 
   final FlutterTts _tts = FlutterTts();
   final _key = enc.Key.fromUtf8(kPreSharedKey);
@@ -97,16 +97,14 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     super.initState();
     _sosController = AnimationController(vsync: this, duration: const Duration(milliseconds: 500));
     _startGpsTracking();
+    _startCompass(); // NEW
     _initTts();
 
-    // Simulate Biometrics
     _biometricTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
-      if (mounted) {
-        setState(() {
-          int base = _sosController.isAnimating ? 110 : 70;
-          _heartRate = base + Random().nextInt(15);
-        });
-      }
+      if (mounted) setState(() {
+        int base = _sosController.isAnimating ? 110 : 70;
+        _heartRate = base + Random().nextInt(15);
+      });
     });
   }
 
@@ -134,9 +132,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied) return;
     }
-    Geolocator.getPositionStream(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 5)
-    ).listen((Position position) {
+    Geolocator.getPositionStream(locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 5)).listen((Position position) {
       if (mounted) {
         setState(() {
           _myLocation = LatLng(position.latitude, position.longitude);
@@ -150,8 +146,18 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
           }
           _isInDanger = currentlyInDanger;
         }
-
         if (_hasFix && _mapController.camera.zoom < 5) _mapController.move(_myLocation, 17);
+      }
+    });
+  }
+
+  // NEW: COMPASS LISTENER
+  void _startCompass() {
+    FlutterCompass.events?.listen((CompassEvent event) {
+      if (mounted) {
+        setState(() {
+          _heading = event.heading ?? 0.0;
+        });
       }
     });
   }
@@ -159,9 +165,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   bool _isPointInside(LatLng point, List<LatLng> polygon) {
     int intersectCount = 0;
     for (int j = 0; j < polygon.length - 1; j++) {
-      if (_rayCastIntersect(point, polygon[j], polygon[j + 1])) {
-        intersectCount++;
-      }
+      if (_rayCastIntersect(point, polygon[j], polygon[j + 1])) intersectCount++;
     }
     return (intersectCount % 2) == 1;
   }
@@ -177,14 +181,13 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     return x > pX;
   }
 
-  // --- NETWORKING ---
   Future<void> _connect() async {
     FocusScope.of(context).unfocus();
     setState(() => _status = "SEARCHING...");
     try {
       _socket = await Socket.connect(_ipController.text, kPort, timeout: const Duration(seconds: 5));
       setState(() => _status = "SECURE UPLINK ESTABLISHED");
-      if (!widget.isStealth) _tts.speak("Secure Uplink Established");
+      if (!widget.isStealth) _tts.speak("Connected");
 
       _socket!.listen(
             (data) => _handleIncomingPacket(data),
@@ -198,7 +201,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       );
 
       _heartbeatTimer?.cancel();
-      _heartbeatTimer = Timer.periodic(const Duration(seconds: 2), (timer) => _sendHeartbeat());
+      _heartbeatTimer = Timer.periodic(const Duration(seconds: 1), (timer) => _sendHeartbeat()); // Fast updates
     } catch (e) {
       if (mounted) setState(() { _status = "FAILED TO CONNECT"; _socket = null; });
     }
@@ -218,10 +221,8 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
 
       if (json['type'] == 'ZONE') {
         List<dynamic> points = json['points'];
-        setState(() {
-          _dangerZone = points.map((p) => LatLng(p[0], p[1])).toList();
-        });
-        if (!widget.isStealth) _tts.speak("Danger Zone Updated");
+        setState(() => _dangerZone = points.map((p) => LatLng(p[0], p[1])).toList());
+        if (!widget.isStealth) _tts.speak("Zone Updated");
       }
       else if (json['type'] == 'CHAT' || json['type'] == 'MOVE_TO') {
         _onMessageReceived(json);
@@ -231,22 +232,11 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
 
   void _onMessageReceived(Map<String, dynamic> msg) {
     setState(() {
-      _messages.insert(0, {
-        'time': DateTime.now(),
-        'sender': msg['sender'] ?? 'CMD',
-        'content': msg['content'] ?? 'DATA',
-        'type': msg['type']
-      });
+      _messages.insert(0, {'time': DateTime.now(), 'sender': msg['sender'], 'content': msg['content'], 'type': msg['type']});
       _hasUnread = true;
-
-      // NEW: Set pending order to trigger the persistent UI overlay
       _pendingOrder = msg;
     });
-
-    String content = msg['content'] ?? "";
-    if (content.isNotEmpty && !widget.isStealth) {
-      _tts.speak("New Order: $content");
-    }
+    if (!widget.isStealth) _tts.speak(msg['content']);
   }
 
   void _sendHeartbeat() async {
@@ -259,9 +249,10 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       _sendPacket({
         'type': 'STATUS',
         'id': _idController.text.toUpperCase(),
+        'role': _selectedRole, // SEND ROLE
         'lat': _myLocation.latitude, 'lng': _myLocation.longitude,
-        'bat': bat, 'state': state,
-        'bpm': _heartRate,
+        'head': _heading,      // SEND HEADING
+        'bat': bat, 'state': state, 'bpm': _heartRate,
       });
     } catch (e) { /* ignore */ }
   }
@@ -274,25 +265,20 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     } catch (e) { /* ignore */ }
   }
 
-  // --- ACTIONS ---
   void _markTarget() {
     if (!_hasFix) return;
     setState(() => _targetMarkers.add(Marker(point: _myLocation, width: 30, height: 30, child: const Icon(Icons.gps_fixed, color: Colors.redAccent))));
-    _sendPacket({
-      'type': 'CHAT', 'sender': _idController.text.toUpperCase(),
-      'content': 'TARGET DESIGNATED AT ${_myLocation.latitude.toStringAsFixed(5)}, ${_myLocation.longitude.toStringAsFixed(5)}'
-    });
+    _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': 'TARGET DESIGNATED'});
   }
 
   void _activateSOS() {
     if (_sosController.isAnimating) {
       _sosController.reset();
       _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': 'SOS CANCELLED'});
-      if(!widget.isStealth) _tts.speak("SOS Cancelled");
     } else {
       _sosController.repeat(reverse: true);
       _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': '!!! SOS ACTIVATED !!!'});
-      if(!widget.isStealth) _tts.speak("Emergency Beacon");
+      if(!widget.isStealth) _tts.speak("Beacon Active");
       _sendHeartbeat();
     }
     setState(() {});
@@ -303,15 +289,13 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     showDialog(context: context, builder: (ctx) => AlertDialog(
       backgroundColor: const Color(0xFF1E1E1E),
       title: Text("SEND SITREP", style: TextStyle(color: widget.isStealth ? Colors.red : Colors.greenAccent)),
-      content: TextField(controller: ctrl, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(hintText: "Status report...", hintStyle: TextStyle(color: Colors.grey))),
-      actions: [
-        TextButton(child: const Text("TX", style: TextStyle(color: Colors.white)), onPressed: () {
-          if (ctrl.text.isNotEmpty) {
-            _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': '[SITREP] ${ctrl.text}'});
-            Navigator.pop(ctx);
-          }
-        })
-      ],
+      content: TextField(controller: ctrl, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(hintText: "Report...", hintStyle: TextStyle(color: Colors.grey))),
+      actions: [TextButton(child: const Text("TX", style: TextStyle(color: Colors.white)), onPressed: () {
+        if (ctrl.text.isNotEmpty) {
+          _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': '[SITREP] ${ctrl.text}'});
+          Navigator.pop(ctx);
+        }
+      })],
     ));
   }
 
@@ -329,11 +313,8 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
 
   void _acknowledgeOrder() {
     if (_pendingOrder == null) return;
-    _sendPacket({'type': 'ACK', 'sender': _idController.text.toUpperCase(), 'content': 'ORDER RECEIVED & UNDERSTOOD'});
-    if (!widget.isStealth) _tts.speak("Copy that");
-    setState(() {
-      _pendingOrder = null; // Dismiss the overlay
-    });
+    _sendPacket({'type': 'ACK', 'sender': _idController.text.toUpperCase(), 'content': 'ORDER COPIED'});
+    setState(() => _pendingOrder = null);
   }
 
   @override
@@ -345,20 +326,15 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       resizeToAvoidBottomInset: false,
       body: Stack(
         children: [
-          // MAP
           ColorFiltered(
-            colorFilter: widget.isStealth
-                ? const ColorFilter.mode(Colors.black, BlendMode.saturation)
-                : const ColorFilter.mode(Colors.transparent, BlendMode.multiply),
+            colorFilter: widget.isStealth ? const ColorFilter.mode(Colors.black, BlendMode.saturation) : const ColorFilter.mode(Colors.transparent, BlendMode.multiply),
             child: FlutterMap(
               mapController: _mapController,
-              options: MapOptions(initialCenter: _hasFix ? _myLocation : const LatLng(40.7128, -74.0060), initialZoom: 15),
+              options: MapOptions(initialCenter: _hasFix ? _myLocation : const LatLng(40.7128, -74.0060), initialZoom: 15, initialRotation: _heading), // Rotate map with user
               children: [
                 TileLayer(urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', userAgentPackageName: 'com.hawklink.soldier'),
-                PolygonLayer(polygons: [
-                  if (_dangerZone.isNotEmpty) Polygon(points: _dangerZone, color: Colors.red.withOpacity(0.3), borderColor: Colors.redAccent, borderStrokeWidth: 4, isFilled: true),
-                ]),
-                MarkerLayer(markers: [if (_hasFix) Marker(point: _myLocation, width: 40, height: 40, child: Icon(Icons.navigation, color: primaryColor)), ..._targetMarkers]),
+                PolygonLayer(polygons: [if (_dangerZone.isNotEmpty) Polygon(points: _dangerZone, color: Colors.red.withOpacity(0.3), borderColor: Colors.redAccent, borderStrokeWidth: 4, isFilled: true)]),
+                MarkerLayer(markers: [if (_hasFix) Marker(point: _myLocation, width: 40, height: 40, child: Transform.rotate(angle: (_heading * (pi / 180)), child: Icon(Icons.navigation, color: primaryColor, size: 35))), ..._targetMarkers]),
               ],
             ),
           ),
@@ -369,77 +345,55 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
           SafeArea(
             child: Column(
               children: [
-                // TOP BAR
                 Container(
                   padding: const EdgeInsets.all(12), margin: const EdgeInsets.all(12),
                   decoration: BoxDecoration(color: Colors.black.withOpacity(0.9), border: Border.all(color: isSOS ? Colors.red : primaryColor), borderRadius: BorderRadius.circular(8)),
                   child: Column(children: [
                     Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                       Text("UPLINK: $_status", style: TextStyle(color: _socket != null ? primaryColor : Colors.red, fontWeight: FontWeight.bold, fontSize: 10)),
-                      IconButton(
-                        icon: Icon(widget.isStealth ? Icons.visibility_off : Icons.visibility, color: primaryColor),
-                        onPressed: widget.onToggleStealth,
-                        tooltip: "Stealth Mode",
-                      )
+                      IconButton(icon: Icon(widget.isStealth ? Icons.visibility_off : Icons.visibility, color: primaryColor), onPressed: widget.onToggleStealth)
                     ]),
 
-                    if (_socket == null) Padding(padding: const EdgeInsets.only(top: 8), child: Row(children: [
-                      Expanded(flex: 1, child: TextField(controller: _idController, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold), decoration: const InputDecoration(labelText: "CALLSIGN"))),
-                      const SizedBox(width: 8),
-                      Expanded(flex: 2, child: TextField(controller: _ipController, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "COMMAND IP"))),
-                      IconButton(icon: Icon(Icons.link, color: primaryColor), onPressed: _connect)
-                    ]))
+                    if (_socket == null) ...[
+                      Row(children: [
+                        Expanded(flex: 1, child: TextField(controller: _idController, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold), decoration: const InputDecoration(labelText: "CALLSIGN"))),
+                        const SizedBox(width: 8),
+                        Expanded(flex: 2, child: DropdownButtonFormField<String>(
+                          value: _selectedRole,
+                          dropdownColor: const Color(0xFF1E1E1E),
+                          decoration: const InputDecoration(labelText: "ROLE"),
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                          items: _roles.map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(),
+                          onChanged: (v) => setState(() => _selectedRole = v!),
+                        )),
+                      ]),
+                      Row(children: [
+                        Expanded(child: TextField(controller: _ipController, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "COMMAND IP"))),
+                        IconButton(icon: Icon(Icons.link, color: primaryColor), onPressed: _connect)
+                      ])
+                    ]
                     else Padding(padding: const EdgeInsets.only(top: 8), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                      Text("ID: ${_idController.text.toUpperCase()} | BPM: $_heartRate", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                      Text("${_idController.text} [$_selectedRole] | $_heartRate BPM", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
                       IconButton(icon: const Icon(Icons.link_off, color: Colors.red), onPressed: _disconnect)
                     ]))
                   ]),
                 ),
 
-                // NEW: PERSISTENT ORDER CARD (Replaces SnackBar)
                 if (_pendingOrder != null)
                   Container(
                     margin: const EdgeInsets.symmetric(horizontal: 12),
                     padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                        color: (widget.isStealth ? Colors.red[900]! : Colors.greenAccent).withOpacity(0.95),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.black, width: 2),
-                        boxShadow: [const BoxShadow(color: Colors.black54, blurRadius: 10)]
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            const Icon(Icons.warning_amber_rounded, color: Colors.black, size: 20),
-                            const SizedBox(width: 8),
-                            Text("INCOMING ORDER // ${_pendingOrder!['sender']}", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12)),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Text(_pendingOrder!['content'], style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 18)),
-                        const SizedBox(height: 12),
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton.icon(
-                            icon: const Icon(Icons.check_circle),
-                            label: const Text("COPY THAT - ACKNOWLEDGE"),
-                            style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.black,
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(vertical: 12)
-                            ),
-                            onPressed: _acknowledgeOrder,
-                          ),
-                        )
-                      ],
-                    ),
+                    decoration: BoxDecoration(color: (widget.isStealth ? Colors.red[900]! : Colors.greenAccent).withOpacity(0.95), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.black, width: 2)),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text("ORDER // ${_pendingOrder!['sender']}", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12)),
+                      Text(_pendingOrder!['content'], style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 18)),
+                      const SizedBox(height: 8),
+                      SizedBox(width: double.infinity, child: ElevatedButton.icon(icon: const Icon(Icons.check_circle), label: const Text("COPY THAT"), style: ElevatedButton.styleFrom(backgroundColor: Colors.black, foregroundColor: Colors.white), onPressed: _acknowledgeOrder))
+                    ]),
                   ),
 
                 const Spacer(),
 
-                // CONTROLS
                 Container(
                   padding: const EdgeInsets.all(16),
                   color: Colors.black.withOpacity(0.95),
@@ -458,7 +412,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
               ],
             ),
           ),
-          Positioned(top: 180, right: 16, child: FloatingActionButton(mini: true, backgroundColor: Colors.black, child: Icon(Icons.my_location, color: primaryColor), onPressed: () { if (_hasFix) _mapController.move(_myLocation, 17); })),
+          Positioned(top: 220, right: 16, child: FloatingActionButton(mini: true, backgroundColor: Colors.black, child: Icon(Icons.my_location, color: primaryColor), onPressed: () { if (_hasFix) _mapController.move(_myLocation, 17); })),
         ],
       ),
     );

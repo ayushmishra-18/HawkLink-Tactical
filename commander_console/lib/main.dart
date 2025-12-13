@@ -16,9 +16,11 @@ const String kFixedIV =      'HAWKLINK_IV_16ch';
 // --- DATA MODELS ---
 class SoldierUnit {
   String id;
+  String role; // NEW
   LatLng location;
+  double heading; // NEW
   int battery;
-  int bpm; // NEW: HEART RATE
+  int bpm;
   String status;
   DateTime lastSeen;
   Socket? socket;
@@ -26,7 +28,9 @@ class SoldierUnit {
 
   SoldierUnit({
     required this.id,
+    this.role = "ASSAULT",
     required this.location,
+    this.heading = 0.0,
     this.battery = 100,
     this.bpm = 75,
     this.status = "IDLE",
@@ -85,10 +89,6 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
   List<LatLng> _tempDrawPoints = [];
   List<LatLng> _activeDangerZone = [];
 
-  // NEW: RULER TOOL
-  LatLng? _rulerStart;
-  LatLng? _rulerEnd;
-
   @override
   void initState() {
     super.initState();
@@ -102,7 +102,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
       setState(() {
         _myIps = interfaces.map((i) => i.addresses.map((a) => a.address).join(", ")).toList();
       });
-    } catch (e) { }
+    } catch (e) { _log("SYS", "Failed to get IP: $e"); }
   }
 
   Future<void> _startServer() async {
@@ -130,7 +130,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
 
       if (json['type'] == 'STATUS') {
         _updateUnit(client, json);
-      } else if (json['type'] == 'CHAT' || json['type'] == 'ACK') { // Handle ACK
+      } else if (json['type'] == 'CHAT' || json['type'] == 'ACK') {
         _log(json['sender'], json['content']);
       }
     } catch (e) { }
@@ -144,8 +144,10 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
 
       if (index != -1) {
         _units[index].location = newLoc;
+        _units[index].heading = (data['head'] ?? 0.0).toDouble(); // Update Heading
+        _units[index].role = data['role'] ?? "ASSAULT"; // Update Role
         _units[index].battery = data['bat'];
-        _units[index].bpm = data['bpm'] ?? 75; // Update BPM
+        _units[index].bpm = data['bpm'] ?? 75;
         _units[index].status = data['state'];
         _units[index].lastSeen = DateTime.now();
         _units[index].socket = socket;
@@ -155,15 +157,25 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
           if (_units[index].pathHistory.length > 500) _units[index].pathHistory.removeAt(0);
         }
       } else {
-        _units.add(SoldierUnit(id: id, location: newLoc, battery: data['bat'], bpm: data['bpm']??75, status: data['state'], lastSeen: DateTime.now(), socket: socket, history: [newLoc]));
-        _log("NET", "UNIT REGISTERED: $id");
+        _units.add(SoldierUnit(
+            id: id,
+            location: newLoc,
+            role: data['role'] ?? "ASSAULT",
+            battery: data['bat'],
+            bpm: data['bpm']??75,
+            status: data['state'],
+            lastSeen: DateTime.now(),
+            socket: socket,
+            history: [newLoc]
+        ));
+        _log("NET", "UNIT REGISTERED: $id (${data['role']})");
       }
     });
   }
 
   void _log(String sender, String msg) {
     setState(() {
-      bool isAck = msg.contains("RECEIVED") || msg.contains("COPY");
+      bool isAck = msg.contains("RECEIVED") || msg.contains("COPIED") || msg.contains("UNDERSTOOD");
       String prefix = isAck ? "✅ " : "";
       _logs.insert(0, "$prefix[${DateFormat('HH:mm:ss').format(DateTime.now())}] $sender: $msg");
     });
@@ -179,13 +191,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
 
   void _issueMoveOrder(LatLng dest) {
     if (_isDrawingMode) return;
-    if (_selectedUnitId == null) {
-      // If no unit selected, start ruler tool
-      setState(() => _rulerStart = dest);
-      return;
-    }
-
-    // Normal Move Order
+    if (_selectedUnitId == null) return;
     try {
       final unit = _units.firstWhere((u) => u.id == _selectedUnitId);
       final packet = _encryptPacket({'type': 'MOVE_TO', 'sender': 'COMMAND', 'content': "MOVE TO ${dest.latitude.toStringAsFixed(4)}, ${dest.longitude.toStringAsFixed(4)}", 'lat': dest.latitude, 'lng': dest.longitude});
@@ -198,20 +204,10 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
     if (_isDrawingMode) {
       setState(() => _tempDrawPoints.add(point));
     } else {
-      setState(() {
-        _selectedUnitId = null;
-        if (_rulerStart != null) {
-          _rulerEnd = point;
-          double dist = const Distance().as(LengthUnit.Meter, _rulerStart!, _rulerEnd!);
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("DISTANCE: ${dist.toStringAsFixed(1)}m")));
-          // Reset after short delay
-          Future.delayed(const Duration(seconds: 4), () => setState(() { _rulerStart = null; _rulerEnd = null; }));
-        }
-      });
+      setState(() => _selectedUnitId = null);
     }
   }
 
-  // --- DRAWING LOGIC ---
   void _toggleDrawingMode() {
     setState(() { _isDrawingMode = !_isDrawingMode; _tempDrawPoints = []; });
     if (_isDrawingMode) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("DRAW MODE ACTIVE"), backgroundColor: Colors.orange));
@@ -235,6 +231,32 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
 
   String _encryptPacket(Map<String, dynamic> data) {
     return _encrypter.encrypt(jsonEncode(data), iv: _iv).base64;
+  }
+
+  // --- HELPER: GET ICON BASED ON ROLE ---
+  IconData _getRoleIcon(String role) {
+    switch (role) {
+      case "MEDIC": return Icons.medical_services;
+      case "SCOUT": return Icons.visibility;
+      case "SNIPER": return Icons.gps_fixed;
+      case "ENGINEER": return Icons.build;
+      default: return Icons.shield; // Assault/Default
+    }
+  }
+
+  // --- HELPER: CREATE CONE POLYGON ---
+  List<LatLng> _createVisionCone(LatLng center, double heading) {
+    double radius = 0.0005; // ~50m
+    double angleRad = heading * (math.pi / 180);
+    double coneWidth = 45 * (math.pi / 180); // 45 degree spread
+
+    return [
+      center,
+      LatLng(center.latitude + radius * math.cos(angleRad - coneWidth/2), center.longitude + radius * math.sin(angleRad - coneWidth/2)),
+      LatLng(center.latitude + radius * math.cos(angleRad), center.longitude + radius * math.sin(angleRad)), // Tip
+      LatLng(center.latitude + radius * math.cos(angleRad + coneWidth/2), center.longitude + radius * math.sin(angleRad + coneWidth/2)),
+      center
+    ];
   }
 
   @override
@@ -267,10 +289,9 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
                       return Container(
                         color: isSelected ? Colors.greenAccent.withOpacity(0.1) : null,
                         child: ListTile(
-                          leading: Icon(Icons.shield, color: isSOS ? Colors.red : Colors.greenAccent),
-                          title: Text(u.id, style: TextStyle(color: isSOS ? Colors.red : Colors.white, fontWeight: FontWeight.bold)),
-                          // UPDATED SUBTITLE WITH BPM
-                          subtitle: Text("BAT: ${u.battery}% | BPM: ${u.bpm} | ${u.status}", style: const TextStyle(color: Colors.grey, fontSize: 10)),
+                          leading: Icon(_getRoleIcon(u.role), color: isSOS ? Colors.red : Colors.greenAccent), // ROLE ICON
+                          title: Text("${u.id} [${u.role}]", style: TextStyle(color: isSOS ? Colors.red : Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                          subtitle: Text("BAT: ${u.battery}% | BPM: ${u.bpm} | HEAD: ${u.heading.toStringAsFixed(0)}°", style: const TextStyle(color: Colors.grey, fontSize: 10)),
                           onTap: () { setState(() => _selectedUnitId = u.id); _mapController.move(u.location, 16); },
                         ),
                       );
@@ -323,13 +344,35 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
                         MarkerLayer(markers: _tempDrawPoints.map((p) => Marker(point: p, width: 10, height: 10, child: Container(decoration: const BoxDecoration(color: Colors.orange, shape: BoxShape.circle)))).toList()),
                       ],
 
-                      // RULER LINE
-                      if (_rulerStart != null && _rulerEnd != null)
-                        PolylineLayer(polylines: [Polyline(points: [_rulerStart!, _rulerEnd!], color: Colors.blueAccent, strokeWidth: 4.0)]),
-
                       if (_showGrid) _TacticalGrid(),
                       if (_showTrails) PolylineLayer(polylines: _units.map((u) => Polyline(points: u.pathHistory, strokeWidth: 5.0, color: u.status == "SOS" ? Colors.red : Colors.greenAccent, isDotted: true)).toList()),
-                      MarkerLayer(markers: _units.map((u) => Marker(point: u.location, width: 60, height: 60, child: Transform.rotate(angle: -_rotation * (math.pi / 180), child: Column(children: [Container(padding: const EdgeInsets.symmetric(horizontal: 4), color: Colors.black54, child: Text(u.id, style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold))), Icon(Icons.navigation, color: u.status == "SOS" ? Colors.red : Colors.cyanAccent, size: 24)])))).toList()),
+
+                      // CONE OF VISION LAYER (NEW)
+                      PolygonLayer(
+                        polygons: _units.map((u) => Polygon(
+                          points: _createVisionCone(u.location, u.heading),
+                          color: Colors.cyanAccent.withOpacity(0.2),
+                          isFilled: true,
+                          borderStrokeWidth: 0,
+                        )).toList(),
+                      ),
+
+                      MarkerLayer(
+                        markers: _units.map((u) => Marker(
+                          point: u.location, width: 60, height: 60,
+                          child: Transform.rotate(
+                            angle: -_rotation * (math.pi / 180),
+                            child: Column(children: [
+                              Container(padding: const EdgeInsets.symmetric(horizontal: 4), color: Colors.black54, child: Text(u.id, style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold))),
+                              // ROTATE ICON WITH HEAD
+                              Transform.rotate(
+                                angle: (u.heading * (math.pi / 180)),
+                                child: Icon(_getRoleIcon(u.role), color: u.status == "SOS" ? Colors.red : Colors.cyanAccent, size: 24),
+                              ),
+                            ]),
+                          ),
+                        )).toList(),
+                      ),
                     ],
                   ),
                 ),
@@ -349,7 +392,6 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
                   ]),
                 ),
                 if (_isDrawingMode) Positioned(top: 80, right: 20, child: Container(padding: const EdgeInsets.all(8), color: Colors.black87, child: const Text("TAP MAP TO PLOT POINTS", style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold)))),
-                if (_rulerStart != null && _rulerEnd == null) Positioned(top: 80, right: 20, child: Container(padding: const EdgeInsets.all(8), color: Colors.blue[900], child: const Text("RULER ACTIVE: TAP END POINT", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)))),
               ],
             ),
           ),
