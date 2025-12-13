@@ -68,31 +68,45 @@ This repository contains two independent yet interconnected applications:
 
 ### 
 
-### **📸 System Screenshot**
+### **📸 System Screenshots**
 
+### 
 
+###### **🖥️ Commander Console View (Desktop)**
 
-#### 
+### 
 
-##### **🖥️ Commander Console View (Desktop)**
+**!\[Commander Console – Tactical Map](assets/screenshots/commander/commander\_console.png)**
 
+### 
 
+###### **Commander-side dashboard showing live unit positions, tactical map view, and network activity.**
 
-!\[Commander Console](https://raw.githubusercontent.com/ayushmishra-18/HawkLink-Tactical/main/assets/screenshots/commander/commander\_console.png)
+### 
 
-#### 
+### **---**
+
+### 
 
 ##### **📱 Soldier Uplink View (Mobile)**
 
+### 
+
+**!\[Soldier Uplink – Alpha-1](assets/screenshots/soldier/soldier\_1.jpg)**
+
+### 
+
+###### **Field unit (ALPHA-1) with secure uplink, live GPS position, and quick-access tactical controls.**
+
+### 
+
+**!\[Soldier Uplink – Alpha-2](assets/screenshots/soldier/soldier\_2.jpg)**
+
+### 
+
+###### **Second field unit (ALPHA-2) operating simultaneously under the same command network.**
 
 
-<p float="left">
-
-&nbsp; <img src="https://raw.githubusercontent.com/ayushmishra-18/HawkLink-Tactical/main/assets/screenshots/soldier/soldier\_1.jpg" width="300" />
-
-&nbsp; <img src="https://raw.githubusercontent.com/ayushmishra-18/HawkLink-Tactical/main/assets/screenshots/soldier/soldier\_2.jpg" width="300" /> 
-
-</p>
 
 
 
