@@ -76,9 +76,11 @@ This repository contains two independent yet interconnected applications:
 
 ### 
 
-**!\[Commander Console – Tactical Map](assets/screenshots/commander/commander\_console.png)**
+[**Commander Console**](assets/screenshots/commander/commander_console.png)
 
-### 
+
+
+
 
 ###### **Commander-side dashboard showing live unit positions, tactical map view, and network activity.**
 
@@ -92,15 +94,15 @@ This repository contains two independent yet interconnected applications:
 
 ### 
 
-**!\[Soldier Uplink – Alpha-1](assets/screenshots/soldier/soldier\_1.jpg)**
+[**Soldier Uplink – Alpha-1**](assets/screenshots/soldier/soldier_1.jpg)
 
-### 
+
 
 ###### **Field unit (ALPHA-1) with secure uplink, live GPS position, and quick-access tactical controls.**
 
 ### 
 
-**!\[Soldier Uplink – Alpha-2](assets/screenshots/soldier/soldier\_2.jpg)**
+[**Soldier Uplink – Alpha-2**](assets/screenshots/soldier/soldier_2.jpg)
 
 ### 
 
