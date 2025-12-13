@@ -78,7 +78,7 @@ This repository contains two independent yet interconnected applications:
 
 
 
-!\[Commander Console](assets/screenshots/commander/commander\_console.png)
+!\[Commander Console](https://raw.githubusercontent.com/ayushmishra-18/HawkLink-Tactical/main/assets/screenshots/commander/commander\_console.png)
 
 #### 
 
@@ -88,13 +88,11 @@ This repository contains two independent yet interconnected applications:
 
 <p float="left">
 
-&nbsp; <img src="assets/screenshots/soldier/soldier\_1.jpg" width="300" />
+&nbsp; <img src="https://raw.githubusercontent.com/ayushmishra-18/HawkLink-Tactical/main/assets/screenshots/soldier/soldier\_1.jpg" width="300" />
 
-&nbsp; <img src="assets/screenshots/soldier/soldier\_2.jpg" width="300" /> 
+&nbsp; <img src="https://raw.githubusercontent.com/ayushmishra-18/HawkLink-Tactical/main/assets/screenshots/soldier/soldier\_2.jpg" width="300" /> 
 
 </p>
-
-
 
 
 
