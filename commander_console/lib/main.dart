@@ -21,6 +21,7 @@ class SoldierUnit {
   String status;
   DateTime lastSeen;
   Socket? socket;
+  List<LatLng> pathHistory;
 
   SoldierUnit({
     required this.id,
@@ -29,7 +30,8 @@ class SoldierUnit {
     this.status = "IDLE",
     required this.lastSeen,
     this.socket,
-  });
+    List<LatLng>? history,
+  }) : pathHistory = history ?? [];
 }
 
 void main() {
@@ -76,6 +78,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
   final MapController _mapController = MapController();
   String? _selectedUnitId;
   bool _showGrid = true;
+  bool _showTrails = true;
   double _tilt = 0.0;
   double _rotation = 0.0;
 
@@ -137,9 +140,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
       } else if (json['type'] == 'CHAT') {
         _log(json['sender'], json['content']);
       }
-    } catch (e) {
-      // _log("ERR", "DECRYPT FAIL");
-    }
+    } catch (e) { }
   }
 
   void _updateUnit(Socket socket, Map<String, dynamic> data) {
@@ -154,14 +155,22 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
         _units[index].status = data['state'];
         _units[index].lastSeen = DateTime.now();
         _units[index].socket = socket;
+
+        // Update Path History
+        if (_units[index].pathHistory.isEmpty ||
+            const Distance().as(LengthUnit.Meter, _units[index].pathHistory.last, newLoc) > 5) {
+          _units[index].pathHistory.add(newLoc);
+          if (_units[index].pathHistory.length > 500) _units[index].pathHistory.removeAt(0);
+        }
       } else {
         _units.add(SoldierUnit(
-          id: id,
-          location: newLoc,
-          battery: data['bat'],
-          status: data['state'],
-          lastSeen: DateTime.now(),
-          socket: socket,
+            id: id,
+            location: newLoc,
+            battery: data['bat'],
+            status: data['state'],
+            lastSeen: DateTime.now(),
+            socket: socket,
+            history: [newLoc]
         ));
         _log("NET", "UNIT REGISTERED: $id");
       }
@@ -266,6 +275,8 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
                     itemBuilder: (c, i) => Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2), child: Text(_logs[i], style: const TextStyle(color: Colors.greenAccent, fontFamily: 'Courier', fontSize: 11))),
                   ),
                 ),
+
+                // COMMAND INPUT
                 Container(
                   padding: const EdgeInsets.all(8),
                   color: Colors.black,
@@ -296,7 +307,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
                 Transform(
                   transform: Matrix4.identity()
                     ..setEntry(3, 2, 0.001) // Perspective depth
-                    ..rotateX(-_tilt),      // FIXED: Negative value tilts the top AWAY from user
+                    ..rotateX(-_tilt),      // Negative tilt = Floor perspective
                   alignment: Alignment.center,
                   child: FlutterMap(
                     mapController: _mapController,
@@ -312,6 +323,18 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
                           userAgentPackageName: 'com.hawklink.commander'
                       ),
                       if (_showGrid) _TacticalGrid(),
+
+                      // BOLD BREADCRUMB TRAILS
+                      if (_showTrails)
+                        PolylineLayer(
+                          polylines: _units.map((u) => Polyline(
+                            points: u.pathHistory,
+                            strokeWidth: 5.0, // BOLD LINE
+                            color: u.status == "SOS" ? Colors.red : Colors.greenAccent, // SOLID COLOR (No Opacity)
+                            isDotted: true,
+                          )).toList(),
+                        ),
+
                       MarkerLayer(
                         markers: _units.map((u) => Marker(
                           point: u.location, width: 60, height: 60,
@@ -333,6 +356,8 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
                   top: 20, right: 20,
                   child: Row(children: [
                     FloatingActionButton.small(backgroundColor: _showGrid ? Colors.greenAccent : Colors.grey, child: const Icon(Icons.grid_4x4), onPressed: () => setState(() => _showGrid = !_showGrid)),
+                    const SizedBox(width: 8),
+                    FloatingActionButton.small(backgroundColor: _showTrails ? Colors.orangeAccent : Colors.grey, child: const Icon(Icons.timeline), onPressed: () => setState(() => _showTrails = !_showTrails)),
                     const SizedBox(width: 8),
                     FloatingActionButton.small(backgroundColor: _tilt > 0 ? Colors.greenAccent : Colors.grey, child: const Icon(Icons.threed_rotation), onPressed: () => setState(() => _tilt = _tilt > 0 ? 0.0 : 0.6)),
                     const SizedBox(width: 8),
