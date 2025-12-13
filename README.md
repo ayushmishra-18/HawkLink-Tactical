@@ -76,7 +76,7 @@ This repository contains two independent yet interconnected applications:
 
 
 
-<img src="C:\\\\Users\\\\AYUSH MISHRA\\\\Desktop\\\\Hawklink Project\\\\assets\\\\screenshots\\\\commander/commander\_console.jpg" width="300" alt="Soldier App Screenshot">
+!\[Commander Console Screenshot](C:\\Users\\AYUSH MISHRA\\Desktop\\Hawklink Project\\assets\\screenshots\\commander/commander\_console.jpg)
 
 
 
@@ -88,15 +88,11 @@ This repository contains two independent yet interconnected applications:
 
 #### 📱 Soldiers Uplink View(Mobile)
 
+!\[Soldier Uplink Screenshot](C:\\Users\\AYUSH MISHRA\\Desktop\\Hawklink Project\\assets\\screenshots\\soldier/soldier 1.jpg)
 
 
 
-
-<img src="C:\\Users\\AYUSH MISHRA\\Desktop\\Hawklink Project\\assets\\screenshots\\soldier/soldier 1.jpg" width="300" alt="Soldier App Screenshot">
-
-
-
-<img src="C:\\\\Users\\\\AYUSH MISHRA\\\\Desktop\\\\Hawklink Project\\\\assets\\\\screenshots\\\\soldier/soldier 2.jpg" width="300" alt="Soldier App Screenshot">
+!\[Soldier Uplink Screenshot](C:\\Users\\AYUSH MISHRA\\Desktop\\Hawklink Project\\assets\\screenshots\\soldier/soldier 2.jpg)
 
 
 
