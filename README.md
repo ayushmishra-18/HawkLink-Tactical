@@ -68,39 +68,37 @@ This repository contains two independent yet interconnected applications:
 
 ### 
 
-### 📸 System Screenshot
+### **📸 System Screenshot**
 
 
 
-#### 🖥️ Commander Console View(Desktop)
+#### 
+
+##### **🖥️ Commander Console View (Desktop)**
 
 
 
-!\[Commander Console Screenshot](assets/screenshots/commander/commander\_console.png)
+!\[Commander Console](assets/screenshots/commander/commander\_console.png)
+
+#### 
+
+##### **📱 Soldier Uplink View (Mobile)**
 
 
 
+<p float="left">
 
+&nbsp; <img src="assets/screenshots/soldier/soldier\_1.jpg" width="300" />
 
+&nbsp; <img src="assets/screenshots/soldier/soldier\_2.jpg" width="300" /> 
 
-
-
-
-#### 📱 Soldiers Uplink View(Mobile)
-
-!\[Soldier Uplink Screenshot](assets/screenshots/soldier/soldier\_1.jpg)
-
-
-
-!\[Soldier Uplink Screenshot](assets/screenshots/soldier/soldier\_2.jpg)
-
-
-
+</p>
 
 
 
 
-##### **🚀** **Getting Started**
+
+#### **🚀** **Getting Started**
 
 
 
