@@ -76,7 +76,7 @@ This repository contains two independent yet interconnected applications:
 
 
 
-!\[Commander Console Screenshot](assets/screenshots/commander/commander\_console.jpg)
+!\[Commander Console Screenshot](assets/screenshots/commander/commander\_console.png)
 
 
 
