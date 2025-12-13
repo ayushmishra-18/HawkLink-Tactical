@@ -2,23 +2,30 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:intl/intl.dart';
 import 'package:encrypt/encrypt.dart' as enc;
+import 'package:audioplayers/audioplayers.dart';
 
 // --- CONFIGURATION ---
 const int kPort = 4444;
 const String kPreSharedKey = 'HAWKLINK_TACTICAL_SECURE_KEY_256';
 const String kFixedIV =      'HAWKLINK_IV_16ch';
 
-// --- DATA MODELS ---
+// --- THEME ---
+const Color kCyan = Color(0xFF00F0FF);
+const Color kRed = Color(0xFFFF2A6D);
+const Color kGreen = Color(0xFF05FFA1);
+const Color kBlack = Color(0xFF050505);
+
 class SoldierUnit {
   String id;
-  String role; // NEW
+  String role;
   LatLng location;
-  double heading; // NEW
+  double heading;
   int battery;
   int bpm;
   String status;
@@ -52,8 +59,9 @@ class CommanderApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF050505),
-        colorScheme: const ColorScheme.dark(primary: Colors.greenAccent),
+        scaffoldBackgroundColor: kBlack,
+        colorScheme: const ColorScheme.dark(primary: kCyan, surface: Color(0xFF101015)),
+        textTheme: const TextTheme(bodyMedium: TextStyle(fontFamily: 'Courier')),
       ),
       home: const CommanderDashboard(),
     );
@@ -67,18 +75,23 @@ class CommanderDashboard extends StatefulWidget {
   State<CommanderDashboard> createState() => _CommanderDashboardState();
 }
 
-class _CommanderDashboardState extends State<CommanderDashboard> {
+class _CommanderDashboardState extends State<CommanderDashboard> with TickerProviderStateMixin {
   ServerSocket? _server;
   final List<SoldierUnit> _units = [];
   final List<String> _logs = [];
   List<String> _myIps = [];
   final TextEditingController _cmdController = TextEditingController();
 
+  // AUDIO: Separate players
+  final AudioPlayer _sfxPlayer = AudioPlayer();
+  final AudioPlayer _alertPlayer = AudioPlayer();
+
   final _key = enc.Key.fromUtf8(kPreSharedKey);
   final _iv = enc.IV.fromUtf8(kFixedIV);
   late final _encrypter = enc.Encrypter(enc.AES(_key));
 
   final MapController _mapController = MapController();
+  late AnimationController _pulseController;
   String? _selectedUnitId;
   bool _showGrid = true;
   bool _showTrails = true;
@@ -94,6 +107,36 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
     super.initState();
     _startServer();
     _getLocalIps();
+    _pulseController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat();
+  }
+
+  @override
+  void dispose() {
+    _sfxPlayer.dispose();
+    _alertPlayer.dispose();
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  // --- AUDIO LOGIC ---
+  Future<void> _playSfx(String filename) async {
+    try {
+      if (_sfxPlayer.state == PlayerState.playing) await _sfxPlayer.stop();
+      _sfxPlayer.setVolume(1.0);
+      await _sfxPlayer.play(AssetSource('sounds/$filename'));
+    } catch (e) {
+      debugPrint("AUDIO ERROR: $e");
+    }
+  }
+
+  Future<void> _playAlert(String filename) async {
+    try {
+      if (_alertPlayer.state == PlayerState.playing) await _alertPlayer.stop();
+      _alertPlayer.setVolume(1.0);
+      await _alertPlayer.play(AssetSource('sounds/$filename'));
+    } catch (e) {
+      debugPrint("AUDIO ERROR: $e");
+    }
   }
 
   Future<void> _getLocalIps() async {
@@ -102,23 +145,24 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
       setState(() {
         _myIps = interfaces.map((i) => i.addresses.map((a) => a.address).join(", ")).toList();
       });
-    } catch (e) { _log("SYS", "Failed to get IP: $e"); }
+    } catch (e) {}
   }
 
   Future<void> _startServer() async {
     try {
       _server = await ServerSocket.bind(InternetAddress.anyIPv4, kPort);
-      _log("SYS", "SERVER ACTIVE ON PORT $kPort");
+      _log("SYS", "SERVER ONLINE | PORT $kPort");
+      _playSfx('connect.mp3');
+
       _server!.listen((Socket client) {
+        _log("NET", "UPLINK ESTABLISHED: ${client.remoteAddress.address}");
         client.listen((data) => _handleData(client, data), onError: (e) => _removeClient(client), onDone: () => _removeClient(client));
       });
-    } catch (e) { _log("ERR", "BIND FAILED: $e"); }
+    } catch (e) { _log("ERR", "BIND FAILURE: $e"); }
   }
 
   void _removeClient(Socket client) {
-    setState(() {
-      _units.removeWhere((u) => u.socket == client);
-    });
+    setState(() => _units.removeWhere((u) => u.socket == client));
   }
 
   void _handleData(Socket client, List<int> data) {
@@ -132,6 +176,8 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
         _updateUnit(client, json);
       } else if (json['type'] == 'CHAT' || json['type'] == 'ACK') {
         _log(json['sender'], json['content']);
+        if(json['content'].toString().contains("SOS")) _playAlert('alert.mp3');
+        if(json['type'] == 'ACK') _playSfx('connect.mp3');
       }
     } catch (e) { }
   }
@@ -144,8 +190,8 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
 
       if (index != -1) {
         _units[index].location = newLoc;
-        _units[index].heading = (data['head'] ?? 0.0).toDouble(); // Update Heading
-        _units[index].role = data['role'] ?? "ASSAULT"; // Update Role
+        _units[index].heading = (data['head'] ?? 0.0).toDouble();
+        _units[index].role = data['role'] ?? "ASSAULT";
         _units[index].battery = data['bat'];
         _units[index].bpm = data['bpm'] ?? 75;
         _units[index].status = data['state'];
@@ -158,24 +204,19 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
         }
       } else {
         _units.add(SoldierUnit(
-            id: id,
-            location: newLoc,
-            role: data['role'] ?? "ASSAULT",
-            battery: data['bat'],
-            bpm: data['bpm']??75,
-            status: data['state'],
-            lastSeen: DateTime.now(),
-            socket: socket,
-            history: [newLoc]
+            id: id, location: newLoc, role: data['role'] ?? "ASSAULT",
+            battery: data['bat'], bpm: data['bpm']??75, status: data['state'],
+            lastSeen: DateTime.now(), socket: socket, history: [newLoc]
         ));
-        _log("NET", "UNIT REGISTERED: $id (${data['role']})");
+        _log("NET", "UNIT REGISTERED: $id");
+        _playSfx('connect.mp3');
       }
     });
   }
 
   void _log(String sender, String msg) {
     setState(() {
-      bool isAck = msg.contains("RECEIVED") || msg.contains("COPIED") || msg.contains("UNDERSTOOD");
+      bool isAck = msg.contains("RECEIVED") || msg.contains("COPY");
       String prefix = isAck ? "✅ " : "";
       _logs.insert(0, "$prefix[${DateFormat('HH:mm:ss').format(DateTime.now())}] $sender: $msg");
     });
@@ -187,19 +228,21 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
     for (var u in _units) { try { u.socket?.write(packet); } catch (e) { } }
     _log("CMD", "BROADCAST: $text");
     _cmdController.clear();
+    _playSfx('order.mp3');
   }
 
   void _issueMoveOrder(LatLng dest) {
-    if (_isDrawingMode) return;
-    if (_selectedUnitId == null) return;
+    if (_isDrawingMode || _selectedUnitId == null) return;
     try {
       final unit = _units.firstWhere((u) => u.id == _selectedUnitId);
       final packet = _encryptPacket({'type': 'MOVE_TO', 'sender': 'COMMAND', 'content': "MOVE TO ${dest.latitude.toStringAsFixed(4)}, ${dest.longitude.toStringAsFixed(4)}", 'lat': dest.latitude, 'lng': dest.longitude});
       unit.socket?.write(packet);
-      _log("CMD", "ORDER $unit.id -> MOVE");
-    } catch(e) {/* ignore */}
+      _log("CMD", "VECTOR ASSIGNED: $unit.id");
+      _playSfx('order.mp3');
+    } catch(e) {}
   }
 
+  // --- DRAWING & ZONES ---
   void _onMapTap(TapPosition tapPos, LatLng point) {
     if (_isDrawingMode) {
       setState(() => _tempDrawPoints.add(point));
@@ -210,7 +253,6 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
 
   void _toggleDrawingMode() {
     setState(() { _isDrawingMode = !_isDrawingMode; _tempDrawPoints = []; });
-    if (_isDrawingMode) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("DRAW MODE ACTIVE"), backgroundColor: Colors.orange));
   }
 
   void _deployCustomZone() {
@@ -220,6 +262,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
     final packet = _encryptPacket({'type': 'ZONE', 'sender': 'COMMAND', 'points': points});
     for (var u in _units) { try { u.socket?.write(packet); } catch (e) {} }
     _log("CMD", "ZONE DEPLOYED");
+    _playAlert('alert.mp3');
   }
 
   void _clearZone() {
@@ -229,31 +272,64 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
     _log("CMD", "ZONE CLEARED");
   }
 
-  String _encryptPacket(Map<String, dynamic> data) {
-    return _encrypter.encrypt(jsonEncode(data), iv: _iv).base64;
-  }
+  String _encryptPacket(Map<String, dynamic> data) => _encrypter.encrypt(jsonEncode(data), iv: _iv).base64;
 
-  // --- HELPER: GET ICON BASED ON ROLE ---
   IconData _getRoleIcon(String role) {
     switch (role) {
       case "MEDIC": return Icons.medical_services;
       case "SCOUT": return Icons.visibility;
       case "SNIPER": return Icons.gps_fixed;
       case "ENGINEER": return Icons.build;
-      default: return Icons.shield; // Assault/Default
+      default: return Icons.shield;
     }
   }
 
-  // --- HELPER: CREATE CONE POLYGON ---
-  List<LatLng> _createVisionCone(LatLng center, double heading) {
-    double radius = 0.0005; // ~50m
-    double angleRad = heading * (math.pi / 180);
-    double coneWidth = 45 * (math.pi / 180); // 45 degree spread
+  Widget _buildGlassPanel({required Widget child, double width = 350}) {
+    return ClipRect(
+      child: Container(
+        width: width,
+        decoration: BoxDecoration(
+          color: const Color(0xFF101015).withOpacity(0.85),
+          border: const Border(right: BorderSide(color: Color(0xFF333333))),
+        ),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+          child: child,
+        ),
+      ),
+    );
+  }
 
+  Widget _buildTacticalHeader() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: const BoxDecoration(
+        color: Color(0xFF0F380F),
+        border: Border(bottom: BorderSide(color: kGreen, width: 2)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text("HAWKLINK // C2", style: TextStyle(color: kGreen, fontWeight: FontWeight.bold, fontSize: 24, letterSpacing: 3.0, fontFamily: 'Courier')),
+        const SizedBox(height: 5),
+        Row(children: [
+          Container(width: 8, height: 8, decoration: const BoxDecoration(color: kGreen, shape: BoxShape.circle)),
+          const SizedBox(width: 8),
+          const Text("SECURE UPLINK: ACTIVE", style: TextStyle(color: kCyan, fontSize: 10, letterSpacing: 1.5)),
+        ]),
+        const SizedBox(height: 10),
+        Text("IP: ${_myIps.isNotEmpty ? _myIps.first : 'SCANNING...'}", style: const TextStyle(color: Colors.white54, fontSize: 12)),
+      ]),
+    );
+  }
+
+  // --- HELPER: VISION CONE (FIXED LOCATION) ---
+  List<LatLng> _createVisionCone(LatLng center, double heading) {
+    double radius = 0.0005;
+    double angleRad = heading * (math.pi / 180);
+    double coneWidth = 45 * (math.pi / 180);
     return [
       center,
       LatLng(center.latitude + radius * math.cos(angleRad - coneWidth/2), center.longitude + radius * math.sin(angleRad - coneWidth/2)),
-      LatLng(center.latitude + radius * math.cos(angleRad), center.longitude + radius * math.sin(angleRad)), // Tip
+      LatLng(center.latitude + radius * math.cos(angleRad), center.longitude + radius * math.sin(angleRad)),
       LatLng(center.latitude + radius * math.cos(angleRad + coneWidth/2), center.longitude + radius * math.sin(angleRad + coneWidth/2)),
       center
     ];
@@ -264,54 +340,70 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
     return Scaffold(
       body: Row(
         children: [
-          // LEFT CONSOLE
-          Container(
-            width: 350,
-            decoration: const BoxDecoration(color: Color(0xFF111111), border: Border(right: BorderSide(color: Color(0xFF333333)))),
+          // LEFT PANEL
+          _buildGlassPanel(
             child: Column(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(20), color: const Color(0xFF0F380F), width: double.infinity,
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    const Text("HAWKLINK // TCP", style: TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold, fontSize: 20, fontFamily: 'Courier')),
-                    const SizedBox(height: 5), const Text("LOCAL SERVER ACTIVE", style: TextStyle(color: Colors.white, fontSize: 10)),
-                    const SizedBox(height: 10), SelectableText("IP: ${_myIps.isNotEmpty ? _myIps.first : 'Searching...'}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                  ]),
-                ),
+                _buildTacticalHeader(),
                 Expanded(
                   flex: 2,
                   child: ListView.builder(
+                    padding: const EdgeInsets.only(top: 10),
                     itemCount: _units.length,
                     itemBuilder: (context, index) {
                       final u = _units[index];
                       bool isSelected = u.id == _selectedUnitId;
                       bool isSOS = u.status == "SOS";
-                      return Container(
-                        color: isSelected ? Colors.greenAccent.withOpacity(0.1) : null,
+                      Color statusColor = isSOS ? kRed : kGreen;
+
+                      return AnimatedContainer(
+                        duration: const Duration(milliseconds: 300),
+                        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: isSelected ? kCyan.withOpacity(0.1) : Colors.transparent,
+                          border: Border.all(color: isSelected ? kCyan : Colors.white10),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
                         child: ListTile(
-                          leading: Icon(_getRoleIcon(u.role), color: isSOS ? Colors.red : Colors.greenAccent), // ROLE ICON
-                          title: Text("${u.id} [${u.role}]", style: TextStyle(color: isSOS ? Colors.red : Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
-                          subtitle: Text("BAT: ${u.battery}% | BPM: ${u.bpm} | HEAD: ${u.heading.toStringAsFixed(0)}°", style: const TextStyle(color: Colors.grey, fontSize: 10)),
-                          onTap: () { setState(() => _selectedUnitId = u.id); _mapController.move(u.location, 16); },
+                          leading: Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(color: statusColor.withOpacity(0.1), border: Border.all(color: statusColor.withOpacity(0.5)), shape: BoxShape.circle),
+                            child: Icon(_getRoleIcon(u.role), color: statusColor, size: 20),
+                          ),
+                          title: Text("${u.id}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier')),
+                          subtitle: Row(
+                            children: [
+                              Icon(Icons.battery_std, size: 12, color: u.battery < 20 ? kRed : kGreen),
+                              Text("${u.battery}% ", style: const TextStyle(color: Colors.grey, fontSize: 10)),
+                              const SizedBox(width: 8),
+                              Icon(Icons.monitor_heart, size: 12, color: u.bpm > 100 ? kRed : kCyan),
+                              Text("${u.bpm}", style: const TextStyle(color: Colors.grey, fontSize: 10)),
+                            ],
+                          ),
+                          trailing: Text(u.role, style: TextStyle(color: kCyan.withOpacity(0.7), fontSize: 9, fontWeight: FontWeight.bold)),
+                          onTap: () { setState(() => _selectedUnitId = u.id); _mapController.move(u.location, 17); },
                         ),
                       );
                     },
                   ),
                 ),
-                const Divider(color: Colors.grey),
-                Expanded(
-                  flex: 1,
+                Container(
+                  height: 200,
+                  decoration: const BoxDecoration(border: Border(top: BorderSide(color: Colors.white10))),
                   child: ListView.builder(
                     reverse: true, itemCount: _logs.length,
-                    itemBuilder: (c, i) => Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2), child: Text(_logs[i], style: const TextStyle(color: Colors.greenAccent, fontFamily: 'Courier', fontSize: 11))),
+                    padding: const EdgeInsets.all(8),
+                    itemBuilder: (c, i) => Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: Text(_logs[i], style: const TextStyle(color: kGreen, fontFamily: 'Courier', fontSize: 10))),
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.all(8), color: Colors.black,
+                  padding: const EdgeInsets.all(12),
+                  decoration: const BoxDecoration(border: Border(top: BorderSide(color: kCyan, width: 1))),
                   child: TextField(
                     controller: _cmdController,
-                    style: const TextStyle(color: Colors.greenAccent, fontFamily: 'Courier'),
-                    decoration: InputDecoration(hintText: "BROADCAST ORDER...", hintStyle: const TextStyle(color: Colors.grey), border: const OutlineInputBorder(), suffixIcon: IconButton(icon: const Icon(Icons.send, color: Colors.greenAccent), onPressed: () => _broadcastOrder(_cmdController.text))),
+                    style: const TextStyle(color: kCyan, fontFamily: 'Courier'),
+                    cursorColor: kCyan,
+                    decoration: const InputDecoration(hintText: "ENTER COMMAND...", hintStyle: TextStyle(color: Colors.white24), border: InputBorder.none, isDense: true),
                     onSubmitted: _broadcastOrder,
                   ),
                 ),
@@ -319,7 +411,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
             ),
           ),
 
-          // RIGHT MAP
+          // MAP
           Expanded(
             child: Stack(
               children: [
@@ -337,61 +429,63 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
                     ),
                     children: [
                       TileLayer(urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', userAgentPackageName: 'com.hawklink.commander'),
-
-                      if (_activeDangerZone.isNotEmpty) PolygonLayer(polygons: [Polygon(points: _activeDangerZone, color: Colors.red.withOpacity(0.3), borderColor: Colors.redAccent, borderStrokeWidth: 4, isFilled: true)]),
+                      if (_activeDangerZone.isNotEmpty) PolygonLayer(polygons: [Polygon(points: _activeDangerZone, color: kRed.withOpacity(0.3), borderColor: kRed, borderStrokeWidth: 2, isFilled: true)]),
                       if (_isDrawingMode && _tempDrawPoints.isNotEmpty) ...[
-                        PolylineLayer(polylines: [Polyline(points: _tempDrawPoints, color: Colors.orangeAccent, strokeWidth: 3.0, isDotted: true), if (_tempDrawPoints.length > 2) Polyline(points: [_tempDrawPoints.last, _tempDrawPoints.first], color: Colors.orangeAccent.withOpacity(0.5), strokeWidth: 1.0, isDotted: true)]),
+                        PolylineLayer(polylines: [Polyline(points: _tempDrawPoints, color: Colors.orange, strokeWidth: 2, isDotted: true), if(_tempDrawPoints.length > 2) Polyline(points: [_tempDrawPoints.last, _tempDrawPoints.first], color: Colors.orange, strokeWidth: 2, isDotted: true)]),
                         MarkerLayer(markers: _tempDrawPoints.map((p) => Marker(point: p, width: 10, height: 10, child: Container(decoration: const BoxDecoration(color: Colors.orange, shape: BoxShape.circle)))).toList()),
                       ],
-
                       if (_showGrid) _TacticalGrid(),
-                      if (_showTrails) PolylineLayer(polylines: _units.map((u) => Polyline(points: u.pathHistory, strokeWidth: 5.0, color: u.status == "SOS" ? Colors.red : Colors.greenAccent, isDotted: true)).toList()),
-
-                      // CONE OF VISION LAYER (NEW)
-                      PolygonLayer(
-                        polygons: _units.map((u) => Polygon(
-                          points: _createVisionCone(u.location, u.heading),
-                          color: Colors.cyanAccent.withOpacity(0.2),
-                          isFilled: true,
-                          borderStrokeWidth: 0,
-                        )).toList(),
-                      ),
-
+                      if (_showTrails) PolylineLayer(polylines: _units.map((u) => Polyline(points: u.pathHistory, strokeWidth: 3.0, color: u.status == "SOS" ? kRed : kGreen, isDotted: true)).toList()),
+                      PolygonLayer(polygons: _units.map((u) => Polygon(points: _createVisionCone(u.location, u.heading), color: kCyan.withOpacity(0.15), isFilled: true, borderStrokeWidth: 0)).toList()),
                       MarkerLayer(
-                        markers: _units.map((u) => Marker(
-                          point: u.location, width: 60, height: 60,
-                          child: Transform.rotate(
-                            angle: -_rotation * (math.pi / 180),
-                            child: Column(children: [
-                              Container(padding: const EdgeInsets.symmetric(horizontal: 4), color: Colors.black54, child: Text(u.id, style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold))),
-                              // ROTATE ICON WITH HEAD
-                              Transform.rotate(
-                                angle: (u.heading * (math.pi / 180)),
-                                child: Icon(_getRoleIcon(u.role), color: u.status == "SOS" ? Colors.red : Colors.cyanAccent, size: 24),
+                        markers: _units.map((u) {
+                          bool isSelected = u.id == _selectedUnitId;
+                          return Marker(
+                            point: u.location, width: 100, height: 100,
+                            child: Transform.rotate(
+                              angle: -_rotation * (math.pi / 180),
+                              child: Stack(
+                                alignment: Alignment.center,
+                                children: [
+                                  if (u.status == "SOS") ScaleTransition(scale: _pulseController, child: Container(width: 80, height: 80, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: kRed.withOpacity(0.5), width: 2)))),
+                                  if (isSelected) RotationTransition(turns: _pulseController, child: Container(width: 60, height: 60, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: kCyan, width: 2, style: BorderStyle.solid)))),
+                                  Column(mainAxisSize: MainAxisSize.min, children: [
+                                    Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.black.withOpacity(0.8), borderRadius: BorderRadius.circular(4), border: Border.all(color: isSelected ? kCyan : Colors.white24)), child: Text(u.id, style: TextStyle(color: isSelected ? kCyan : Colors.white, fontSize: 10, fontWeight: FontWeight.bold, fontFamily: 'Courier'))),
+                                    const SizedBox(height: 4),
+                                    Transform.rotate(angle: (u.heading * (math.pi / 180)), child: Icon(_getRoleIcon(u.role), color: u.status == "SOS" ? kRed : kCyan, size: 28)),
+                                  ]),
+                                ],
                               ),
-                            ]),
-                          ),
-                        )).toList(),
+                            ),
+                          );
+                        }).toList(),
                       ),
                     ],
                   ),
                 ),
                 Positioned(
                   top: 20, right: 20,
-                  child: Row(children: [
-                    if (_isDrawingMode) ...[FloatingActionButton.small(backgroundColor: Colors.green, onPressed: _deployCustomZone, child: const Icon(Icons.check)), const SizedBox(width: 8), FloatingActionButton.small(backgroundColor: Colors.red, onPressed: _toggleDrawingMode, child: const Icon(Icons.close)), const SizedBox(width: 20)] else ...[FloatingActionButton.small(backgroundColor: _activeDangerZone.isNotEmpty ? Colors.red : Colors.grey, onPressed: _activeDangerZone.isNotEmpty ? _clearZone : _toggleDrawingMode, child: Icon(_activeDangerZone.isNotEmpty ? Icons.delete_forever : Icons.edit)), const SizedBox(width: 8)],
-                    FloatingActionButton.small(backgroundColor: _showGrid ? Colors.greenAccent : Colors.grey, child: const Icon(Icons.grid_4x4), onPressed: () => setState(() => _showGrid = !_showGrid)),
-                    const SizedBox(width: 8),
-                    FloatingActionButton.small(backgroundColor: _showTrails ? Colors.orangeAccent : Colors.grey, child: const Icon(Icons.timeline), onPressed: () => setState(() => _showTrails = !_showTrails)),
-                    const SizedBox(width: 8),
-                    FloatingActionButton.small(backgroundColor: _tilt > 0 ? Colors.greenAccent : Colors.grey, child: const Icon(Icons.threed_rotation), onPressed: () => setState(() => _tilt = _tilt > 0 ? 0.0 : 0.6)),
-                    const SizedBox(width: 8),
-                    FloatingActionButton.small(backgroundColor: Colors.black54, child: const Icon(Icons.rotate_left, color: Colors.white), onPressed: () { setState(() => _rotation -= 45); _mapController.rotate(_rotation); }),
-                    const SizedBox(width: 8),
-                    FloatingActionButton.small(backgroundColor: Colors.black54, child: const Icon(Icons.rotate_right, color: Colors.white), onPressed: () { setState(() => _rotation += 45); _mapController.rotate(_rotation); }),
-                  ]),
+                  child: _buildGlassPanel(
+                    width: 60,
+                    child: Column(children: [
+                      const SizedBox(height: 10),
+                      if (_isDrawingMode) ...[
+                        _HudBtn(icon: Icons.check, color: kGreen, onTap: _deployCustomZone),
+                        _HudBtn(icon: Icons.close, color: kRed, onTap: _toggleDrawingMode),
+                      ] else ...[
+                        _HudBtn(icon: _activeDangerZone.isNotEmpty ? Icons.delete : Icons.edit_road, color: kRed, onTap: _activeDangerZone.isNotEmpty ? _clearZone : _toggleDrawingMode),
+                      ],
+                      const Divider(color: Colors.white24, indent: 10, endIndent: 10),
+                      _HudBtn(icon: Icons.grid_4x4, color: _showGrid ? kGreen : Colors.grey, onTap: () => setState(() => _showGrid = !_showGrid)),
+                      _HudBtn(icon: Icons.timeline, color: _showTrails ? kCyan : Colors.grey, onTap: () => setState(() => _showTrails = !_showTrails)),
+                      _HudBtn(icon: Icons.threed_rotation, color: _tilt > 0 ? kGreen : Colors.grey, onTap: () => setState(() => _tilt = _tilt > 0 ? 0.0 : 0.6)),
+                      _HudBtn(icon: Icons.rotate_left, color: Colors.white, onTap: () { setState(() => _rotation -= 45); _mapController.rotate(_rotation); }),
+                      _HudBtn(icon: Icons.rotate_right, color: Colors.white, onTap: () { setState(() => _rotation += 45); _mapController.rotate(_rotation); }),
+                      const SizedBox(height: 10),
+                    ]),
+                  ),
                 ),
-                if (_isDrawingMode) Positioned(top: 80, right: 20, child: Container(padding: const EdgeInsets.all(8), color: Colors.black87, child: const Text("TAP MAP TO PLOT POINTS", style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold)))),
+                if (_isDrawingMode) Positioned(top: 20, left: 0, right: 0, child: Center(child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8), decoration: BoxDecoration(color: Colors.black87, border: Border.all(color: Colors.orange), borderRadius: BorderRadius.circular(20)), child: const Text("DRAWING MODE: TAP POINTS", style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold))))),
               ],
             ),
           ),
@@ -401,12 +495,18 @@ class _CommanderDashboardState extends State<CommanderDashboard> {
   }
 }
 
+class _HudBtn extends StatelessWidget {
+  final IconData icon; final Color color; final VoidCallback onTap;
+  const _HudBtn({required this.icon, required this.color, required this.onTap});
+  @override Widget build(BuildContext context) => IconButton(icon: Icon(icon, color: color, size: 20), onPressed: onTap);
+}
+
 class _TacticalGrid extends StatelessWidget {
   @override Widget build(BuildContext context) => IgnorePointer(child: CustomPaint(size: Size.infinite, painter: _GridPainter()));
 }
 class _GridPainter extends CustomPainter {
   @override void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = Colors.greenAccent.withOpacity(0.1)..strokeWidth = 1;
+    final paint = Paint()..color = kGreen.withOpacity(0.05)..strokeWidth = 1;
     for (double x = 0; x < size.width; x += 100) canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
     for (double y = 0; y < size.height; y += 100) canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
   }
