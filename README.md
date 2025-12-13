@@ -1,12 +1,12 @@
-**🦅 HawkLink Tactical System**
+# **🦅 HawkLink Tactical System**
 
 
 
-HawkLink Tactical System is a dual-application tactical situational awareness platform built with Flutter, designed for secure command-to-unit coordination in disconnected or low-infrastructure environments.
+**HawkLink Tactical System** is a **dual-application tactical situational awareness platform** built with **Flutter**, designed for secure command-to-unit coordination in disconnected or low-infrastructure environments.
 
 
 
-**📡 System Overview**
+## **📡 System Overview**
 
 
 
@@ -14,23 +14,23 @@ This repository contains two independent yet interconnected applications:
 
 
 
-🖥️ **Commander Console (Desktop)**
+##### 🖥️ **Commander Console (Desktop)**
 
 
 
-Cross-platform support: **Windows / Linux / macOS**
+* Cross-platform support: **Windows / Linux / macOS**
 
 
 
-Acts as a **TCP Server** for managing connected units
+* Acts as a **TCP Server** for managing connected units
 
 
 
-**3D Satellite Map** with tactical plotting \& unit visualization
+* **3D Satellite Map** with tactical plotting \& unit visualization
 
 
 
-Designed for command-level decision making
+* Designed for command-level decision making
 
 
 
@@ -38,27 +38,27 @@ Designed for command-level decision making
 
 
 
-📱 **Soldier Uplink (Mobile)**
+##### 📱 **Soldier Uplink (Mobile)**
 
 
 
-Cross-platform support: **Android / iOS**
+* Cross-platform support: **Android / iOS**
 
 
 
-Real-time **GPS tracking**
+* Real-time **GPS tracking**
 
 
 
-**SOS / Emergency Beacon**
+* **SOS / Emergency Beacon**
 
 
 
-**Secure TCP uplink** to Commander Console
+* **Secure TCP uplink** to Commander Console
 
 
 
-Built for field deployment and low-bandwidth usage
+* Built for field deployment and low-bandwidth usage
 
 
 
@@ -66,29 +66,33 @@ Built for field deployment and low-bandwidth usage
 
 
 
-**🚀** **Getting Started**
-
-**🔧 Prerequisites**
+##### **🚀** **Getting Started**
 
 
 
-**Ensure the following tools are installed:**
+###### **🔧 Prerequisites**
 
 
 
-Flutter SDK
+###### **Ensure the following tools are installed:**
 
 
 
-Visual Studio (required for Windows desktop builds)
+* Flutter SDK
 
 
 
-Android Studio (required for mobile builds)
+* Visual Studio (required for Windows desktop builds)
 
 
 
-**▶️ Running the Commander Console**
+* Android Studio (required for mobile builds)
+
+
+
+###### **▶️ Running the Commander Console**
+
+
 
 cd commander\_console
 
@@ -104,7 +108,9 @@ flutter run -d windows
 
 
 
-**▶️** **Running the Soldier App**
+###### **▶️** **Running the Soldier App**
+
+
 
 cd soldier\_app
 
@@ -120,21 +126,20 @@ flutter run -d android
 
 
 
-**🛡️ Project Focus**
+#### **🛡️ Project Focus**
 
 
 
-Offline-first communication
+* Offline-first communication
 
 
 
-Secure TCP-based data exchange
+* Secure TCP-based data exchange
 
 
 
-Tactical visualization \& command acknowledgment
+* Tactical visualization \& command acknowledgment
 
 
 
-Designed for defense, emergency response, and disaster operations
-
+* Designed for defense, emergency response, and disaster operations
