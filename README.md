@@ -1,50 +1,140 @@
-HawkLink Tactical System
+**🦅 HawkLink Tactical System**
 
-A dual-app tactical situational awareness system built with Flutter.
 
-Structure
 
-This repository contains two distinct applications:
+HawkLink Tactical System is a dual-application tactical situational awareness platform built with Flutter, designed for secure command-to-unit coordination in disconnected or low-infrastructure environments.
 
-Commander Console (Desktop):
 
-Windows/Linux/Mac support.
 
-TCP Server for managing units.
+**📡 System Overview**
 
-3D Satellite Map with tactical plotting.
 
-Located in: /commander_console
 
-Soldier Uplink (Mobile):
+This repository contains two independent yet interconnected applications:
 
-Android/iOS support.
 
-GPS Tracking & SOS Beacon.
 
-Secure TCP Uplink to Commander.
+🖥️ **Commander Console (Desktop)**
 
-Located in: /soldier_app
 
-Getting Started
 
-Prerequisites
+Cross-platform support: **Windows / Linux / macOS**
+
+
+
+Acts as a **TCP Server** for managing connected units
+
+
+
+**3D Satellite Map** with tactical plotting \& unit visualization
+
+
+
+Designed for command-level decision making
+
+
+
+📁 Location: commander\_console/
+
+
+
+📱 **Soldier Uplink (Mobile)**
+
+
+
+Cross-platform support: **Android / iOS**
+
+
+
+Real-time **GPS tracking**
+
+
+
+**SOS / Emergency Beacon**
+
+
+
+**Secure TCP uplink** to Commander Console
+
+
+
+Built for field deployment and low-bandwidth usage
+
+
+
+📁 Location: soldier\_app/
+
+
+
+**🚀** **Getting Started**
+
+**🔧 Prerequisites**
+
+
+
+**Ensure the following tools are installed:**
+
+
 
 Flutter SDK
 
-Visual Studio (for Windows desktop build)
 
-Android Studio (for Mobile build)
 
-Running the Commander Console
+Visual Studio (required for Windows desktop builds)
 
-cd commander_console
+
+
+Android Studio (required for mobile builds)
+
+
+
+**▶️ Running the Commander Console**
+
+cd commander\_console
+
 flutter pub get
+
 flutter run -d windows
 
 
-Running the Soldier App
 
-cd soldier_app
+
+
+💡 Replace windows with linux or macos depending on your platform.
+
+
+
+**▶️** **Running the Soldier App**
+
+cd soldier\_app
+
 flutter pub get
+
 flutter run -d android
+
+
+
+
+
+📱 Ensure an Android emulator or physical device is connected.
+
+
+
+**🛡️ Project Focus**
+
+
+
+Offline-first communication
+
+
+
+Secure TCP-based data exchange
+
+
+
+Tactical visualization \& command acknowledgment
+
+
+
+Designed for defense, emergency response, and disaster operations
+
