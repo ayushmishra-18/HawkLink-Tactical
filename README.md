@@ -2,11 +2,11 @@
 
 
 
-###### A secure, offline-first Command \& Control (C2) platform for tactical situational awareness.
+A secure, offline-first Command \& Control (C2) platform for tactical situational awareness.
 
-###### 
 
-###### HawkLink allows commanders to coordinate field units in real-time without relying on the internet or cellular infrastructure. It uses a secure local TCP mesh to transmit GPS, orders, and intelligence data.
+
+HawkLink allows commanders to coordinate field units in real-time without relying on the internet or cellular infrastructure. It uses a secure local TCP mesh to transmit GPS, orders, and intelligence data.
 
 
 
@@ -14,7 +14,7 @@
 
 
 
-###### This repository contains two independent yet interconnected applications:
+This repository contains two independent yet interconnected applications:
 
 
 
@@ -22,17 +22,17 @@
 
 
 
-###### The tactical "God View" running on Windows. Features 3D satellite terrain, unit tracking, and waypoint management.
+The tactical "God View" running on Windows. Features 3D satellite terrain, unit tracking, and waypoint management.
 
 
 
 
 
-###### Screenshot:-
+Screenshot:-
 
-###### 
 
-###### Command\_Console :- [Command](commander_console/assets/screenshots/command_console.jpg)
+
+Command\_Console :- [Command](commander_console/assets/screenshots/command_console.jpg)
 
 
 
@@ -40,15 +40,15 @@
 
 
 
-###### The field operative's view. Features GPS tracking, SOS beacon, stealth mode, and secure comms.
+The field operative's view. Features GPS tracking, SOS beacon, stealth mode, and secure comms.
 
 
 
-###### Screenshot:-
+Screenshot:-
 
 
 
-###### Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)
+Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)
 
 
 
@@ -62,19 +62,19 @@
 
 
 
-* ###### Offline-First: Works over Local Wi-Fi, Hotspot, or Mesh VPN (Tailscale). No internet required.
+* Offline-First: Works over Local Wi-Fi, Hotspot, or Mesh VPN (Tailscale). No internet required.
 
-###### 
 
-* ###### Secure TCP Mesh: Custom encrypted socket protocol for low-latency data transmission.
 
-###### 
+* Secure TCP Mesh: Custom encrypted socket protocol for low-latency data transmission.
 
-* ###### AES-256 Encryption: All data (chat, location, images) is encrypted before transmission.
 
-###### 
 
-* ###### Cross-Platform: Commander (Windows/Linux/Mac) + Soldier (Android/iOS).
+* AES-256 Encryption: All data (chat, location, images) is encrypted before transmission.
+
+
+
+* Cross-Platform: Commander (Windows/Linux/Mac) + Soldier (Android/iOS).
 
 
 
@@ -82,41 +82,41 @@
 
 
 
-* ###### 3D Satellite Map: Tilt and rotate the battlefield for tactical terrain analysis.
+* 3D Satellite Map: Tilt and rotate the battlefield for tactical terrain analysis.
 
-###### 
 
-* ###### Real-Time Unit Tracking: Live position updates with Breadcrumb Trails.
 
-###### 
+* Real-Time Unit Tracking: Live position updates with Breadcrumb Trails.
 
-* ###### Biometric Feed: Monitors soldier heart rate (BPM) and battery levels.
 
-###### 
 
-* ###### Tactical Waypoints: Drop drag-and-drop markers:
+* Biometric Feed: Monitors soldier heart rate (BPM) and battery levels.
 
-###### 
 
-######  	1. 🏁 Rally Point
 
-######  	2. 💀 Enemy Contact
+* Tactical Waypoints: Drop drag-and-drop markers:
 
-######  	3. 🏥 Medical Cache
 
-######  	4. 🚁 Landing Zone (LZ)
 
-###### 
+ 	1. 🏁 Rally Point
 
-* ###### Geofencing: Draw custom "Red Zones" (Danger Areas). Automatically warns soldiers if they enter.
+ 	2. 💀 Enemy Contact
 
-###### 
+ 	3. 🏥 Medical Cache
 
-* ###### Intel Hub: Receives and displays encrypted images from field units.
+ 	4. 🚁 Landing Zone (LZ)
 
-###### 
 
-* ###### Persistent Logs: Automatically saves chat history and intel to disk.
+
+* Geofencing: Draw custom "Red Zones" (Danger Areas). Automatically warns soldiers if they enter.
+
+
+
+* Intel Hub: Receives and displays encrypted images from field units.
+
+
+
+* Persistent Logs: Automatically saves chat history and intel to disk.
 
 
 
@@ -124,31 +124,31 @@
 
 
 
-* ###### Role-Based Warfare: Select classes (Medic, Sniper, Scout, Engineer) with unique icons.
+* Role-Based Warfare: Select classes (Medic, Sniper, Scout, Engineer) with unique icons.
 
-###### 
 
-* ###### Compass Vision: Transmits real-time magnetic heading (Cone of Vision) to the commander.
 
-###### 
+* Compass Vision: Transmits real-time magnetic heading (Cone of Vision) to the commander.
 
-* ###### Tactical Cam: Snap and send encrypted photos directly to HQ.
 
-###### 
 
-* ###### Stealth Mode: One-tap toggle to switch UI to OLED Black/Red for night vision compatibility.
+* Tactical Cam: Snap and send encrypted photos directly to HQ.
 
-###### 
 
-* ###### Voice Command (TTS): Reads orders out loud ("New Order: Move to Sector 4").
 
-###### 
+* Stealth Mode: One-tap toggle to switch UI to OLED Black/Red for night vision compatibility.
 
-* ###### SOS Beacon: Emergency panic button that triggers a fleet-wide alert.
 
-###### 
 
-* ###### Order Acknowledgment: "COPY THAT" button to confirm receipt of orders.
+* Voice Command (TTS): Reads orders out loud ("New Order: Move to Sector 4").
+
+
+
+* SOS Beacon: Emergency panic button that triggers a fleet-wide alert.
+
+
+
+* Order Acknowledgment: "COPY THAT" button to confirm receipt of orders.
 
 
 
@@ -252,23 +252,23 @@ flutter run -d android
 
 
 
-* ###### Military \& defense operations
+* Military \& defense operations
 
-###### 
 
-* ###### Disaster response \& rescue missions
 
-###### 
+* Disaster response \& rescue missions
 
-* ###### Border patrol \& surveillance
 
-###### 
 
-* ###### Remote area coordination
+* Border patrol \& surveillance
 
-###### 
 
-* ###### Emergency services \& law enforcement
+
+* Remote area coordination
+
+
+
+* Emergency services \& law enforcement
 
 ###### 
 
@@ -276,27 +276,27 @@ flutter run -d android
 
 
 
-* ###### Framework: Flutter (Dart)
+* Framework: Flutter (Dart)
 
-###### 
 
-* ###### Maps: flutter\_map + latlong2 (ArcGIS Satellite Tiles)
 
-###### 
+* Maps: flutter\_map + latlong2 (ArcGIS Satellite Tiles)
 
-* ###### Networking: Raw TCP Sockets (dart:io)
 
-###### 
 
-* ###### Security: encrypt (AES-CBC)
+* Networking: Raw TCP Sockets (dart:io)
 
-###### 
 
-* ###### Sensors: geolocator, flutter\_compass, battery\_plus
 
-###### 
+* Security: encrypt (AES-CBC)
 
-* ###### Audio/Media: audioplayers, flutter\_tts, image\_picker
+
+
+* Sensors: geolocator, flutter\_compass, battery\_plus
+
+
+
+* Audio/Media: audioplayers, flutter\_tts, image\_picker
 
 
 
@@ -304,19 +304,19 @@ flutter run -d android
 
 
 
-* ###### Offline-first communication
+* Offline-first communication
 
-###### 
 
-* ###### Secure TCP-based data exchange
 
-###### 
+* Secure TCP-based data exchange
 
-* ###### Tactical visualization \& command acknowledgment
 
-###### 
 
-* ###### Designed for defense, emergency response, and disaster operations
+* Tactical visualization \& command acknowledgment
+
+
+
+* Designed for defense, emergency response, and disaster operations
 
 
 
@@ -324,23 +324,23 @@ flutter run -d android
 
 
 
-* ###### ❌ No internet dependency
+* ❌ No internet dependency
 
-###### 
 
-* ###### 🔁 Two-way acknowledgment-based communication
 
-###### 
+* 🔁 Two-way acknowledgment-based communication
 
-* ###### 🗺️ Map-driven situational awareness
 
-###### 
 
-* ###### 📡 Designed for RF / mesh expansion
+* 🗺️ Map-driven situational awareness
 
-###### 
 
-* ###### ⚔️ Replaces error-prone voice radio commands
+
+* 📡 Designed for RF / mesh expansion
+
+
+
+* ⚔️ Replaces error-prone voice radio commands
 
 
 
