@@ -12,6 +12,7 @@ import 'package:intl/intl.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_compass/flutter_compass.dart';
+import 'sci_fi_ui.dart'; // IMPORT IS CRITICAL
 
 // --- CONFIGURATION ---
 const int kPort = 4444;
@@ -42,8 +43,9 @@ class _SoldierAppState extends State<SoldierApp> {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: _isStealthMode ? Colors.black : const Color(0xFF050505),
-        colorScheme: ColorScheme.dark(primary: _isStealthMode ? Colors.red[900]! : Colors.greenAccent, surface: _isStealthMode ? Colors.black : const Color(0xFF1E1E1E)),
+        scaffoldBackgroundColor: _isStealthMode ? Colors.black : kSciFiBlack,
+        colorScheme: ColorScheme.dark(primary: _isStealthMode ? kSciFiRed : kSciFiGreen),
+        textTheme: const TextTheme(bodyMedium: TextStyle(fontFamily: 'Courier')),
       ),
       home: UplinkScreen(isStealth: _isStealthMode, onToggleStealth: _toggleStealth),
     );
@@ -128,7 +130,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
           final base64Image = base64Encode(bytes);
           _sendPacket({'type': 'IMAGE', 'sender': _idController.text.toUpperCase(), 'content': base64Image});
           if(!widget.isStealth) _tts.speak("Image Transmitted");
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(backgroundColor: Colors.green, content: Text("INTEL SENT")));
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(backgroundColor: kSciFiGreen, content: Text("INTEL SENT")));
         } else {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(backgroundColor: Colors.red, content: Text("UPLINK FAILED")));
         }
@@ -209,7 +211,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       if (!widget.isStealth) _tts.speak("Zone Updated");
     }
     else if (json['type'] == 'WAYPOINT') {
-      // HANDLE NEW/REMOVE WAYPOINT
       if (json['action'] == 'ADD') {
         var data = json['data'];
         setState(() {
@@ -220,7 +221,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
         setState(() {
           _waypoints.removeWhere((wp) => wp.id == json['id']);
         });
-        // Silent remove (no TTS needed for removal to avoid clutter)
       }
     }
     else if (json['type'] == 'MOVE_TO') {
@@ -260,13 +260,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     } catch (e) {}
   }
 
-  void _markTarget() {
-    if (!_hasFix) return;
-    setState(() => _targetMarkers.add(Marker(point: _myLocation, width: 30, height: 30, child: const Icon(Icons.gps_fixed, color: Colors.redAccent))));
-    _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': 'TARGET DESIGNATED'});
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(backgroundColor: Colors.red, content: Text("TARGET MARKED ON MAP")));
-  }
-
   void _activateSOS() {
     if (_sosController.isAnimating) {
       _sosController.reset();
@@ -284,20 +277,23 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   void _sendSitrep() {
     TextEditingController ctrl = TextEditingController();
     showDialog(context: context, builder: (ctx) => AlertDialog(
-      backgroundColor: const Color(0xFF1E1E1E),
-      title: Text("SEND SITREP", style: TextStyle(color: widget.isStealth ? Colors.red : Colors.greenAccent)),
-      content: TextField(controller: ctrl, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(hintText: "Report...", hintStyle: TextStyle(color: Colors.grey))),
-      actions: [TextButton(child: const Text("TX", style: TextStyle(color: Colors.white)), onPressed: () { if (ctrl.text.isNotEmpty) { _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': '[SITREP] ${ctrl.text}'}); Navigator.pop(ctx); } })],
+      backgroundColor: kSciFiDarkBlue,
+      title: Text("SEND SITREP", style: TextStyle(color: widget.isStealth ? kSciFiRed : kSciFiGreen, fontFamily: 'Courier')),
+      content: TextField(controller: ctrl, style: const TextStyle(color: Colors.white, fontFamily: 'Courier'), decoration: const InputDecoration(hintText: "Report...", hintStyle: TextStyle(color: Colors.grey))),
+      actions: [
+        TextButton(child: Text("CANCEL", style: TextStyle(color: Colors.grey)), onPressed: () => Navigator.pop(ctx)),
+        TextButton(child: Text("TRANSMIT", style: TextStyle(color: kSciFiGreen, fontWeight: FontWeight.bold)), onPressed: () { if (ctrl.text.isNotEmpty) { _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': '[SITREP] ${ctrl.text}'}); Navigator.pop(ctx); } })
+      ],
     ));
   }
 
   void _showLogs() {
     setState(() => _hasUnread = false);
-    showModalBottomSheet(context: context, backgroundColor: const Color(0xFF111111), builder: (ctx) => Container(
+    showModalBottomSheet(context: context, backgroundColor: kSciFiBlack, builder: (ctx) => Container(
       padding: const EdgeInsets.all(16),
       child: ListView.builder(itemCount: _messages.length, itemBuilder: (c, i) => ListTile(
-        title: Text(_messages[i]['sender'], style: const TextStyle(color: Colors.grey, fontSize: 10)),
-        subtitle: Text(_messages[i]['content'], style: const TextStyle(color: Colors.white)),
+        title: Text(_messages[i]['sender'], style: const TextStyle(color: kSciFiCyan, fontSize: 10, fontFamily: 'Courier')),
+        subtitle: Text(_messages[i]['content'], style: const TextStyle(color: Colors.white, fontFamily: 'Courier')),
         trailing: Text(DateFormat('HH:mm').format(_messages[i]['time']), style: const TextStyle(color: Colors.grey, fontSize: 10)),
       )),
     ));
@@ -309,15 +305,36 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     setState(() => _pendingOrder = null);
   }
 
+  IconData _getWaypointIcon(String type) {
+    switch (type) {
+      case "RALLY": return Icons.flag;
+      case "ENEMY": return Icons.warning_amber_rounded;
+      case "MED": return Icons.medical_services;
+      case "LZ": return Icons.flight_land;
+      default: return Icons.location_on;
+    }
+  }
+
+  Color _getWaypointColor(String type) {
+    switch (type) {
+      case "RALLY": return Colors.blueAccent;
+      case "ENEMY": return kSciFiRed;
+      case "MED": return Colors.white;
+      case "LZ": return kSciFiGreen;
+      default: return kSciFiCyan;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool isSOS = _sosController.isAnimating;
-    final Color primaryColor = widget.isStealth ? Colors.red[900]! : Colors.greenAccent;
+    final Color primaryColor = widget.isStealth ? kSciFiRed : kSciFiGreen;
 
     return Scaffold(
       resizeToAvoidBottomInset: false,
       body: Stack(
         children: [
+          // MAP LAYER
           ColorFiltered(
             colorFilter: widget.isStealth ? const ColorFilter.mode(Colors.black, BlendMode.saturation) : const ColorFilter.mode(Colors.transparent, BlendMode.multiply),
             child: FlutterMap(
@@ -329,29 +346,23 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
                 onLongPress: (tapPos, point) {
                   setState(() => _targetMarkers.add(Marker(point: point, width: 30, height: 30, child: const Icon(Icons.gps_fixed, color: Colors.orangeAccent))));
                   _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': 'TARGET AT ${point.latitude.toStringAsFixed(4)}, ${point.longitude.toStringAsFixed(4)}'});
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("TARGET MARKED ON MAP")));
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("TARGET MARKED")));
                 },
               ),
               children: [
                 TileLayer(urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', userAgentPackageName: 'com.hawklink.soldier'),
-                PolygonLayer(polygons: [if (_dangerZone.isNotEmpty) Polygon(points: _dangerZone, color: Colors.red.withOpacity(0.3), borderColor: Colors.redAccent, borderStrokeWidth: 4, isFilled: true)]),
+                PolygonLayer(polygons: [if (_dangerZone.isNotEmpty) Polygon(points: _dangerZone, color: kSciFiRed.withOpacity(0.3), borderColor: kSciFiRed, borderStrokeWidth: 4, isFilled: true)]),
 
-                // MARKERS
                 MarkerLayer(markers: [
                   if (_hasFix) Marker(point: _myLocation, width: 40, height: 40, child: Transform.rotate(angle: (_heading * (pi / 180)), child: Icon(Icons.navigation, color: primaryColor, size: 35))),
                   ..._targetMarkers,
                   if (_commanderObjective != null) Marker(point: _commanderObjective!, width: 50, height: 50, child: Column(children: [Container(padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2), color: Colors.black, child: const Text("OBJ", style: TextStyle(color: Colors.yellowAccent, fontSize: 10, fontWeight: FontWeight.bold))), const Icon(Icons.flag, color: Colors.yellowAccent, size: 30)])),
-                  // WAYPOINTS
                   ..._waypoints.map((wp) => Marker(
                       point: wp.location,
                       width: 50, height: 50,
                       child: Column(children: [
-                        Icon(
-                            wp.type == "RALLY" ? Icons.flag : wp.type == "ENEMY" ? Icons.warning : wp.type == "MED" ? Icons.local_hospital : Icons.flight_land,
-                            color: wp.type == "ENEMY" ? Colors.red : (wp.type == "MED" ? Colors.white : Colors.blueAccent),
-                            size: 30
-                        ),
-                        Text(wp.type, style: const TextStyle(fontSize: 8, color: Colors.white, backgroundColor: Colors.black45))
+                        Icon(_getWaypointIcon(wp.type), color: _getWaypointColor(wp.type), size: 30),
+                        Container(padding: const EdgeInsets.symmetric(horizontal: 4), decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(4)), child: Text(wp.type, style: const TextStyle(fontSize: 8, color: Colors.white)))
                       ])
                   ))
                 ]),
@@ -359,68 +370,102 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
             ),
           ),
 
-          if (isSOS) AnimatedBuilder(animation: _sosController, builder: (ctx, ch) => Container(color: Colors.red.withOpacity(0.3 * _sosController.value))),
-          if (_isInDanger) Container(decoration: BoxDecoration(border: Border.all(color: Colors.red, width: 10))),
+          // VISUAL EFFECTS
+          CrosshairOverlay(color: primaryColor), // HUD VISOR LOOK
+          const CrtOverlay(), // SCANLINES
 
+          if (isSOS) AnimatedBuilder(animation: _sosController, builder: (ctx, ch) => Container(color: kSciFiRed.withOpacity(0.3 * _sosController.value))),
+          if (_isInDanger) Container(decoration: BoxDecoration(border: Border.all(color: kSciFiRed, width: 10))),
+
+          // UI LAYER
           SafeArea(
             child: Column(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(12), margin: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(color: Colors.black.withOpacity(0.9), border: Border.all(color: isSOS ? Colors.red : primaryColor), borderRadius: BorderRadius.circular(8)),
-                  child: Column(children: [
-                    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                      Text("UPLINK: $_status", style: TextStyle(color: _socket != null ? primaryColor : Colors.red, fontWeight: FontWeight.bold, fontSize: 10)),
-                      IconButton(icon: Icon(widget.isStealth ? Icons.visibility_off : Icons.visibility, color: primaryColor), onPressed: widget.onToggleStealth)
-                    ]),
-
-                    if (_socket == null) ...[
-                      Row(children: [
-                        Expanded(flex: 1, child: TextField(controller: _idController, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold), decoration: const InputDecoration(labelText: "CALLSIGN"))),
-                        const SizedBox(width: 8),
-                        Expanded(flex: 2, child: DropdownButtonFormField<String>(value: _selectedRole, dropdownColor: const Color(0xFF1E1E1E), decoration: const InputDecoration(labelText: "ROLE"), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold), items: _roles.map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(), onChanged: (v) => setState(() => _selectedRole = v!))),
+                // TOP STATUS PANEL
+                Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: SciFiPanel(
+                    showBg: true,
+                    borderColor: isSOS ? kSciFiRed : primaryColor,
+                    child: Column(children: [
+                      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                        Text("UPLINK: $_status", style: TextStyle(color: _socket != null ? primaryColor : kSciFiRed, fontWeight: FontWeight.bold, fontFamily: 'Courier', fontSize: 10)),
+                        IconButton(icon: Icon(widget.isStealth ? Icons.visibility_off : Icons.visibility, color: primaryColor, size: 18), onPressed: widget.onToggleStealth)
                       ]),
-                      Row(children: [Expanded(child: TextField(controller: _ipController, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "COMMAND IP"))), IconButton(icon: Icon(Icons.link, color: primaryColor), onPressed: _connect)])
-                    ]
-                    else Padding(padding: const EdgeInsets.only(top: 8), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                      Text("ID: ${_idController.text.toUpperCase()} | BPM: $_heartRate", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
-                      IconButton(icon: const Icon(Icons.link_off, color: Colors.red), onPressed: _disconnect)
-                    ]))
-                  ]),
+
+                      if (_socket == null) ...[
+                        const SizedBox(height: 8),
+                        Row(children: [
+                          Expanded(flex: 1, child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 8), decoration: BoxDecoration(color: kSciFiDarkBlue, border: Border.all(color: primaryColor)), child: TextField(controller: _idController, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier'), decoration: const InputDecoration(border: InputBorder.none, hintText: "CALLSIGN")))),
+                          const SizedBox(width: 8),
+                          Expanded(flex: 2, child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 8), decoration: BoxDecoration(color: kSciFiDarkBlue, border: Border.all(color: primaryColor)), child: DropdownButtonFormField<String>(value: _selectedRole, dropdownColor: kSciFiBlack, decoration: const InputDecoration(border: InputBorder.none), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier'), items: _roles.map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(), onChanged: (v) => setState(() => _selectedRole = v!)))),
+                        ]),
+                        const SizedBox(height: 8),
+                        Row(children: [Expanded(child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 8), decoration: BoxDecoration(color: kSciFiDarkBlue, border: Border.all(color: primaryColor)), child: TextField(controller: _ipController, style: const TextStyle(color: Colors.white, fontFamily: 'Courier'), decoration: const InputDecoration(border: InputBorder.none, hintText: "COMMAND IP")))), const SizedBox(width: 8), SciFiButton(label: "LINK", icon: Icons.link, color: primaryColor, onTap: _connect)])
+                      ]
+                      else Padding(padding: const EdgeInsets.only(top: 8), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                        Text("ID: ${_idController.text.toUpperCase()} | BPM: $_heartRate", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier', fontSize: 14)),
+                        IconButton(icon: const Icon(Icons.link_off, color: kSciFiRed), onPressed: _disconnect)
+                      ]))
+                    ]),
+                  ),
                 ),
 
+                // INCOMING ORDERS
                 if (_pendingOrder != null)
-                  Container(margin: const EdgeInsets.symmetric(horizontal: 12), padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: (widget.isStealth ? Colors.red[900]! : Colors.greenAccent).withOpacity(0.95), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.black, width: 2)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text("ORDER // ${_pendingOrder!['sender']}", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12)), Text(_pendingOrder!['content'], style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 18)), const SizedBox(height: 8), SizedBox(width: double.infinity, child: ElevatedButton.icon(icon: const Icon(Icons.check_circle), label: const Text("COPY THAT"), style: ElevatedButton.styleFrom(backgroundColor: Colors.black, foregroundColor: Colors.white), onPressed: _acknowledgeOrder))])),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                    child: SciFiPanel(
+                      borderColor: widget.isStealth ? kSciFiRed : kSciFiGreen,
+                      title: "INCOMING ORDER // ${_pendingOrder!['sender']}",
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(_pendingOrder!['content'], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18, fontFamily: 'Courier')),
+                        const SizedBox(height: 8),
+                        SciFiButton(label: "ACKNOWLEDGE", icon: Icons.check_circle, color: Colors.white, onTap: _acknowledgeOrder)
+                      ]),
+                    ),
+                  ),
 
                 const Spacer(),
 
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  color: Colors.black.withOpacity(0.95),
-                  child: Column(children: [
-                    Row(children: [
-                      Expanded(child: _Btn("SITREP", Icons.assignment, Colors.blue, _sendSitrep)),
-                      const SizedBox(width: 8),
-                      Expanded(child: _Btn("CAM", Icons.camera_alt, Colors.purpleAccent, _sendTacticalImage)),
-                      const SizedBox(width: 8),
-                      Expanded(child: _Btn("LOGS", _hasUnread ? Icons.mail : Icons.history, _hasUnread ? Colors.green : Colors.white, _showLogs)),
+                // BOTTOM CONTROLS
+                Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: SciFiPanel(
+                    showBg: true,
+                    borderColor: primaryColor,
+                    child: Column(children: [
+                      Row(children: [
+                        Expanded(child: SciFiButton(label: "SITREP", icon: Icons.assignment, color: Colors.blue, onTap: _sendSitrep)),
+                        const SizedBox(width: 4),
+                        Expanded(child: SciFiButton(label: "CAM", icon: Icons.camera_alt, color: Colors.purpleAccent, onTap: _sendTacticalImage)),
+                        const SizedBox(width: 4),
+                        Expanded(child: SciFiButton(label: "LOGS", icon: _hasUnread ? Icons.mark_email_unread : Icons.history, color: _hasUnread ? kSciFiGreen : Colors.white, onTap: _showLogs)),
+                      ]),
+                      const SizedBox(height: 8),
+                      GestureDetector(
+                          onLongPress: _activateSOS,
+                          child: Container(
+                              height: 50,
+                              decoration: BoxDecoration(
+                                  color: isSOS ? kSciFiRed.withOpacity(0.8) : kSciFiRed.withOpacity(0.2),
+                                  border: Border.all(color: kSciFiRed, width: 2),
+                                  borderRadius: BorderRadius.circular(4)
+                              ),
+                              child: Center(
+                                  child: Text(isSOS ? "SOS ACTIVE" : "HOLD SOS", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier', letterSpacing: 2))
+                              )
+                          )
+                      )
                     ]),
-                    const SizedBox(height: 10),
-                    GestureDetector(onLongPress: _activateSOS, child: Container(height: 50, decoration: BoxDecoration(color: isSOS ? Colors.red : const Color(0xFF330000), border: Border.all(color: Colors.red)), child: Center(child: Text(isSOS ? "SOS ACTIVE" : "HOLD SOS", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)))))
-                  ]),
+                  ),
                 ),
               ],
             ),
           ),
-          Positioned(top: 220, right: 16, child: FloatingActionButton(mini: true, backgroundColor: Colors.black, child: Icon(Icons.my_location, color: primaryColor), onPressed: () { if (_hasFix) _mapController.move(_myLocation, 17); })),
+          Positioned(top: 220, right: 16, child: FloatingActionButton(mini: true, backgroundColor: kSciFiBlack, child: Icon(Icons.my_location, color: primaryColor), onPressed: () { if (_hasFix) _mapController.move(_myLocation, 17); })),
         ],
       ),
     );
   }
-}
-
-class _Btn extends StatelessWidget {
-  final String l; final IconData i; final Color c; final VoidCallback t;
-  const _Btn(this.l, this.i, this.c, this.t);
-  @override Widget build(BuildContext context) => Material(color: Colors.grey[900], child: InkWell(onTap: t, child: Container(padding: const EdgeInsets.symmetric(vertical: 16), decoration: BoxDecoration(border: Border.all(color: c.withOpacity(0.5))), child: Column(children: [Icon(i, color: c), Text(l, style: TextStyle(color: c, fontSize: 10))]))));
 }
