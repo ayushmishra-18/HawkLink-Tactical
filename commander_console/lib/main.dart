@@ -95,6 +95,9 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   List<String> _myIps = [];
   final TextEditingController _cmdController = TextEditingController();
 
+  // TCP BUFFERING
+  final Map<Socket, List<int>> _clientBuffers = {};
+
   final AudioPlayer _sfxPlayer = AudioPlayer();
   final AudioPlayer _alertPlayer = AudioPlayer();
 
@@ -113,7 +116,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   // MODES
   bool _isDrawingMode = false;
   String? _placingWaypointType;
-  bool _isDeleteWaypointMode = false; // NEW: Delete Mode
+  bool _isDeleteWaypointMode = false;
   List<LatLng> _tempDrawPoints = [];
   List<LatLng> _activeDangerZone = [];
 
@@ -207,19 +210,48 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
       _playSfx('connect.mp3');
       _server!.listen((Socket client) {
         _log("NET", "UPLINK ESTABLISHED: ${client.remoteAddress.address}");
-        client.listen((data) => _handleData(client, data), onError: (e) => _removeClient(client), onDone: () => _removeClient(client));
+        _clientBuffers[client] = [];
+        client.listen(
+              (data) => _handleData(client, data),
+          onError: (e) => _removeClient(client),
+          onDone: () => _removeClient(client),
+        );
       });
     } catch (e) { _log("ERR", "BIND FAILURE: $e"); }
   }
 
   void _removeClient(Socket client) {
-    setState(() => _units.removeWhere((u) => u.socket == client));
+    setState(() {
+      _units.removeWhere((u) => u.socket == client);
+      _clientBuffers.remove(client);
+    });
   }
 
-  void _handleData(Socket client, List<int> data) async {
+  // --- BUFFERED DATA HANDLING (FIXES IMAGES) ---
+  void _handleData(Socket client, List<int> data) {
+    if (!_clientBuffers.containsKey(client)) {
+      _clientBuffers[client] = [];
+    }
+    _clientBuffers[client]!.addAll(data);
+
+    List<int> buffer = _clientBuffers[client]!;
+    while (true) {
+      int index = buffer.indexOf(10); // Find \n delimiter
+      if (index == -1) break;
+
+      List<int> packetBytes = buffer.sublist(0, index);
+      buffer = buffer.sublist(index + 1);
+      _clientBuffers[client] = buffer;
+
+      _processPacket(client, packetBytes);
+    }
+  }
+
+  void _processPacket(Socket client, List<int> packetBytes) async {
     try {
-      final str = utf8.decode(data).trim();
+      final str = utf8.decode(packetBytes).trim();
       if (str.isEmpty) return;
+
       final decrypted = _encrypter.decrypt64(str, iv: _iv);
       final json = jsonDecode(decrypted);
 
@@ -236,7 +268,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
         _log(sender, "📸 INTEL RECEIVED", imagePath: path);
         _playSfx('connect.mp3');
       }
-    } catch (e) { }
+    } catch (e) { debugPrint("PACKET ERROR: $e"); }
   }
 
   void _updateUnit(Socket socket, Map<String, dynamic> data) {
@@ -285,7 +317,8 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   void _broadcastOrder(String text) {
     if (text.isEmpty) return;
     final packet = _encryptPacket({'type': 'CHAT', 'sender': 'COMMAND', 'content': text});
-    for (var u in _units) { try { u.socket?.write(packet); } catch (e) { } }
+    final delimitedPacket = utf8.encode("$packet\n");
+    for (var u in _units) { try { u.socket?.add(delimitedPacket); } catch (e) { } }
     _log("CMD", "BROADCAST: $text");
     _cmdController.clear();
     _playSfx('order.mp3');
@@ -296,7 +329,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     try {
       final unit = _units.firstWhere((u) => u.id == _selectedUnitId);
       final packet = _encryptPacket({'type': 'MOVE_TO', 'sender': 'COMMAND', 'content': "MOVE TO ${dest.latitude.toStringAsFixed(4)}, ${dest.longitude.toStringAsFixed(4)}", 'lat': dest.latitude, 'lng': dest.longitude});
-      unit.socket?.write(packet);
+      unit.socket?.add(utf8.encode("$packet\n"));
       _log("CMD", "VECTOR ASSIGNED: $unit.id");
       _playSfx('order.mp3');
     } catch(e) {}
@@ -304,27 +337,20 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
 
   // --- MAP INTERACTION ---
   void _onMapTap(TapPosition tapPos, LatLng point) {
-    // 1. DELETE MODE (NEW)
     if (_isDeleteWaypointMode) {
       _removeWaypointNear(point);
-      setState(() => _isDeleteWaypointMode = false); // Reset after deletion
+      setState(() => _isDeleteWaypointMode = false);
       return;
     }
-
-    // 2. PLACE WAYPOINT
     if (_placingWaypointType != null) {
       _deployWaypoint(point, _placingWaypointType!);
       setState(() => _placingWaypointType = null);
       return;
     }
-
-    // 3. DRAW ZONE
     if (_isDrawingMode) {
       setState(() => _tempDrawPoints.add(point));
       return;
     }
-
-    // 4. CLEAR SELECTION
     setState(() => _selectedUnitId = null);
   }
 
@@ -333,28 +359,21 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     TacticalWaypoint wp = TacticalWaypoint(id: id, type: type, location: point, created: DateTime.now());
     setState(() => _waypoints.add(wp));
     final packet = _encryptPacket({'type': 'WAYPOINT', 'action': 'ADD', 'data': wp.toJson()});
-    for (var u in _units) { try { u.socket?.write(packet); } catch (e) {} }
+    final delimitedPacket = utf8.encode("$packet\n");
+    for (var u in _units) { try { u.socket?.add(delimitedPacket); } catch (e) {} }
     _log("CMD", "WAYPOINT DEPLOYED: $type");
     _playSfx('order.mp3');
   }
 
-  // NEW: REMOVE WAYPOINT LOGIC
   void _removeWaypointNear(LatLng point) {
-    // Find nearest waypoint within ~100 meters
     try {
       final nearest = _waypoints.firstWhere((wp) => const Distance().as(LengthUnit.Meter, wp.location, point) < 200);
-
-      setState(() {
-        _waypoints.remove(nearest);
-      });
-
-      // Broadcast Remove Packet
+      setState(() => _waypoints.remove(nearest));
       final packet = _encryptPacket({'type': 'WAYPOINT', 'action': 'REMOVE', 'id': nearest.id});
-      for (var u in _units) { try { u.socket?.write(packet); } catch (e) {} }
-
+      final delimitedPacket = utf8.encode("$packet\n");
+      for (var u in _units) { try { u.socket?.add(delimitedPacket); } catch (e) {} }
       _log("CMD", "WAYPOINT REMOVED");
-      _playSfx('connect.mp3'); // Acknowledge sound
-
+      _playSfx('connect.mp3');
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("NO WAYPOINT NEARBY")));
     }
@@ -369,7 +388,8 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     setState(() { _activeDangerZone = List.from(_tempDrawPoints); _isDrawingMode = false; _tempDrawPoints = []; });
     List<List<double>> points = _activeDangerZone.map((p) => [p.latitude, p.longitude]).toList();
     final packet = _encryptPacket({'type': 'ZONE', 'sender': 'COMMAND', 'points': points});
-    for (var u in _units) { try { u.socket?.write(packet); } catch (e) {} }
+    final delimitedPacket = utf8.encode("$packet\n");
+    for (var u in _units) { try { u.socket?.add(delimitedPacket); } catch (e) {} }
     _log("CMD", "ZONE DEPLOYED");
     _playAlert('alert.mp3');
   }
@@ -377,7 +397,8 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   void _clearZone() {
     setState(() { _activeDangerZone = []; _tempDrawPoints = []; });
     final packet = _encryptPacket({'type': 'ZONE', 'sender': 'COMMAND', 'points': []});
-    for (var u in _units) { try { u.socket?.write(packet); } catch (e) {} }
+    final delimitedPacket = utf8.encode("$packet\n");
+    for (var u in _units) { try { u.socket?.add(delimitedPacket); } catch (e) {} }
     _log("CMD", "ZONE CLEARED");
   }
 
@@ -433,7 +454,6 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     return Scaffold(
       body: Stack(
         children: [
-          // MAIN ROW (Map + Sidebar)
           Row(
             children: [
               _buildGlassPanel(
@@ -502,7 +522,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                                 Icon(
                                   wp.type == "RALLY" ? Icons.flag :
                                   wp.type == "ENEMY" ? Icons.warning :
-                                  wp.type == "MED" ? Icons.local_hospital : Icons.flight_land, // LZ
+                                  wp.type == "MED" ? Icons.local_hospital : Icons.flight_land,
                                   color: wp.type == "ENEMY" ? kRed : (wp.type == "MED" ? Colors.white : Colors.blueAccent),
                                   size: 32,
                                 ),
@@ -551,7 +571,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                         _WaypointBtn(label: "MEDIC", icon: Icons.local_hospital, color: Colors.white, isSelected: _placingWaypointType == "MED", onTap: () => setState(() => _placingWaypointType = "MED")),
                         _WaypointBtn(label: "LZ", icon: Icons.flight_land, color: kGreen, isSelected: _placingWaypointType == "LZ", onTap: () => setState(() => _placingWaypointType = "LZ")),
                         const SizedBox(width: 10),
-                        // NEW: DELETE WAYPOINT BUTTON
+                        // DELETE WAYPOINT BUTTON
                         _WaypointBtn(label: "DELETE", icon: Icons.delete_forever, color: Colors.orange, isSelected: _isDeleteWaypointMode, onTap: () => setState(() { _isDeleteWaypointMode = !_isDeleteWaypointMode; _placingWaypointType = null; })),
                       ],
                     ),
