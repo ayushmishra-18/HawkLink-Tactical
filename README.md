@@ -32,7 +32,7 @@ Screenshot:-
 
 
 
-Command\_Console :- [Command](commander_console/assets/screenshots/command_console.jpg)
+Command\_Console :- [Command](commander_console/assets/screenshots/commander_console.jpg)
 
 
 
