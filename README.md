@@ -32,7 +32,7 @@
 
 ###### 
 
-###### Command\_Console :- [Command](commander_console/assets/screenshot/command_console)
+###### Command\_Console :- [Command](commander_console/assets/screenshots/command_console.jpg)
 
 
 
@@ -48,7 +48,7 @@
 
 
 
-###### Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1)
+###### Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)
 
 
 
@@ -98,13 +98,13 @@
 
 ###### 
 
-###### &nbsp;	1. 🏁 Rally Point
+######  	1. 🏁 Rally Point
 
-###### &nbsp;	2. 💀 Enemy Contact
+######  	2. 💀 Enemy Contact
 
-###### &nbsp;	3. 🏥 Medical Cache
+######  	3. 🏥 Medical Cache
 
-###### &nbsp;	4. 🚁 Landing Zone (LZ)
+######  	4. 🚁 Landing Zone (LZ)
 
 ###### 
 
@@ -180,7 +180,7 @@
 
 ```
 
-git clone \[https://github.com/ayushmishra-18/HawkLink-Tactical.git](https://github.com/ayushmishra-18/HawkLink-Tactical.git)
+git clone \\\[https://github.com/ayushmishra-18/HawkLink-Tactical.git](https://github.com/ayushmishra-18/HawkLink-Tactical.git)
 
 cd HawkLink-Tactical
 
@@ -200,7 +200,7 @@ cd HawkLink-Tactical
 
 ```
 
-cd commander\\\_console
+cd commander\\\\\\\_console
 
 
 
@@ -230,7 +230,7 @@ flutter run -d windows
 
 ```
 
-cd soldier\\\_app
+cd soldier\\\\\\\_app
 
 
 
