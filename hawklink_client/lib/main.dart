@@ -12,7 +12,10 @@ import 'package:intl/intl.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_compass/flutter_compass.dart';
-import 'sci_fi_ui.dart'; // IMPORT IS CRITICAL
+import 'sci_fi_ui.dart';
+import 'heart_rate_scanner.dart';
+import 'ar_compass.dart'; // RESTORED AR IMPORT
+import 'acoustic_sensor.dart'; // RESTORED ACOUSTIC SENSOR
 
 // --- CONFIGURATION ---
 const int kPort = 4444;
@@ -64,6 +67,7 @@ class UplinkScreen extends StatefulWidget {
 class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderStateMixin {
   Socket? _socket;
   String _status = "DISCONNECTED";
+  String _bioStatus = "BIO-LINK STANDBY";
   final TextEditingController _ipController = TextEditingController(text: "192.168.1.X");
   final TextEditingController _idController = TextEditingController(text: "ALPHA-1");
   String _selectedRole = "ASSAULT";
@@ -77,7 +81,12 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   LatLng? _commanderObjective;
   List<TacticalWaypoint> _waypoints = [];
 
-  int _heartRate = 75;
+  // --- BIO METRICS ---
+  int _heartRate = 0;
+  int _spO2 = 98;
+  bool _isBioActive = false;
+
+  // --- SENSORS ---
   Timer? _biometricTimer;
   final MapController _mapController = MapController();
   LatLng _myLocation = const LatLng(40.7128, -74.0060);
@@ -94,6 +103,10 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   late AnimationController _sosController;
   List<int> _incomingBuffer = [];
 
+  // RESTORED SENSORS
+  AcousticSensor? _acousticSensor;
+  bool _isGunshotDetected = false;
+
   @override
   void initState() {
     super.initState();
@@ -101,7 +114,53 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     _startGpsTracking();
     _startCompass();
     _initTts();
-    _biometricTimer = Timer.periodic(const Duration(seconds: 3), (timer) { if (mounted) setState(() { _heartRate = (_sosController.isAnimating ? 110 : 70) + Random().nextInt(15); }); });
+    _initAcousticSensor(); // Auto-start gunshot detection
+
+    // SIMULATION LOOP
+    _biometricTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
+      if (mounted && _isBioActive) {
+        setState(() {
+          int base = _sosController.isAnimating ? 120 : 75;
+          _heartRate = base + Random().nextInt(10) - 5;
+          _spO2 = 96 + Random().nextInt(4);
+        });
+      }
+    });
+  }
+
+  void _initAcousticSensor() {
+    _acousticSensor = AcousticSensor(onGunshotDetected: _handleGunshot);
+    _acousticSensor?.start();
+  }
+
+  void _handleGunshot() {
+    if (_socket == null) return;
+
+    // Visual Alert
+    setState(() => _isGunshotDetected = true);
+    Future.delayed(const Duration(seconds: 2), () {
+      if(mounted) setState(() => _isGunshotDetected = false);
+    });
+
+    // Send Alert
+    _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': '!!! SHOTS FIRED !!!'});
+
+    if (!widget.isStealth) _tts.speak("Contact! Shots fired!");
+  }
+
+  void _openBioScanner() {
+    setState(() { _isBioActive = true; _bioStatus = "BIO-SCANNER ACTIVE"; });
+    showDialog(context: context, barrierDismissible: false, builder: (ctx) => HeartRateScanner(onBpmDetected: (bpm) { setState(() { _heartRate = bpm; }); })).then((_) { setState(() => _bioStatus = "LAST SCAN: $_heartRate BPM"); });
+  }
+
+  // --- AR VIEW OPENER ---
+  void _openAR() {
+    if (!_hasFix) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("WAITING FOR GPS...")));
+      return;
+    }
+    // Navigate to AR View
+    Navigator.push(context, MaterialPageRoute(builder: (c) => ArCompassView(waypoints: _waypoints, myLocation: _myLocation)));
   }
 
   void _initTts() async {
@@ -115,6 +174,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     _socket?.destroy();
     _heartbeatTimer?.cancel();
     _biometricTimer?.cancel();
+    _acousticSensor?.stop();
     _sosController.dispose();
     _tts.stop();
     super.dispose();
@@ -247,7 +307,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       int bat = await _battery.batteryLevel;
       String state = _sosController.isAnimating ? "SOS" : "ACTIVE";
       if (_isInDanger) state = "DANGER";
-      _sendPacket({'type': 'STATUS', 'id': _idController.text.toUpperCase(), 'role': _selectedRole, 'lat': _myLocation.latitude, 'lng': _myLocation.longitude, 'head': _heading, 'bat': bat, 'state': state, 'bpm': _heartRate});
+      _sendPacket({'type': 'STATUS', 'id': _idController.text.toUpperCase(), 'role': _selectedRole, 'lat': _myLocation.latitude, 'lng': _myLocation.longitude, 'head': _heading, 'bat': bat, 'state': state, 'bpm': _heartRate, 'spo2': _spO2});
     } catch (e) {}
   }
 
@@ -278,7 +338,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     TextEditingController ctrl = TextEditingController();
     showDialog(context: context, builder: (ctx) => AlertDialog(
       backgroundColor: kSciFiDarkBlue,
-      title: Text("SEND SITREP", style: TextStyle(color: widget.isStealth ? kSciFiRed : kSciFiGreen, fontFamily: 'Courier')),
+      title: Text("SEND SITREP", style: TextStyle(color: widget.isStealth ? kSciFiRed : kSciFiGreen, fontFamily: 'Orbitron')),
       content: TextField(controller: ctrl, style: const TextStyle(color: Colors.white, fontFamily: 'Courier'), decoration: const InputDecoration(hintText: "Report...", hintStyle: TextStyle(color: Colors.grey))),
       actions: [
         TextButton(child: Text("CANCEL", style: TextStyle(color: Colors.grey)), onPressed: () => Navigator.pop(ctx)),
@@ -292,7 +352,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     showModalBottomSheet(context: context, backgroundColor: kSciFiBlack, builder: (ctx) => Container(
       padding: const EdgeInsets.all(16),
       child: ListView.builder(itemCount: _messages.length, itemBuilder: (c, i) => ListTile(
-        title: Text(_messages[i]['sender'], style: const TextStyle(color: kSciFiCyan, fontSize: 10, fontFamily: 'Courier')),
+        title: Text(_messages[i]['sender'], style: const TextStyle(color: kSciFiCyan, fontSize: 10, fontFamily: 'Orbitron')),
         subtitle: Text(_messages[i]['content'], style: const TextStyle(color: Colors.white, fontFamily: 'Courier')),
         trailing: Text(DateFormat('HH:mm').format(_messages[i]['time']), style: const TextStyle(color: Colors.grey, fontSize: 10)),
       )),
@@ -321,7 +381,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       case "ENEMY": return kSciFiRed;
       case "MED": return Colors.white;
       case "LZ": return kSciFiGreen;
-      default: return kSciFiCyan;
+      default: return Colors.orange;
     }
   }
 
@@ -334,6 +394,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       resizeToAvoidBottomInset: false,
       body: Stack(
         children: [
+          const CrtOverlay(),
           // MAP LAYER
           ColorFiltered(
             colorFilter: widget.isStealth ? const ColorFilter.mode(Colors.black, BlendMode.saturation) : const ColorFilter.mode(Colors.transparent, BlendMode.multiply),
@@ -374,6 +435,9 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
           CrosshairOverlay(color: primaryColor), // HUD VISOR LOOK
           const CrtOverlay(), // SCANLINES
 
+          // GUNSHOT FLASH
+          if (_isGunshotDetected) Container(color: kSciFiRed.withOpacity(0.5)),
+
           if (isSOS) AnimatedBuilder(animation: _sosController, builder: (ctx, ch) => Container(color: kSciFiRed.withOpacity(0.3 * _sosController.value))),
           if (_isInDanger) Container(decoration: BoxDecoration(border: Border.all(color: kSciFiRed, width: 10))),
 
@@ -404,7 +468,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
                         Row(children: [Expanded(child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 8), decoration: BoxDecoration(color: kSciFiDarkBlue, border: Border.all(color: primaryColor)), child: TextField(controller: _ipController, style: const TextStyle(color: Colors.white, fontFamily: 'Courier'), decoration: const InputDecoration(border: InputBorder.none, hintText: "COMMAND IP")))), const SizedBox(width: 8), SciFiButton(label: "LINK", icon: Icons.link, color: primaryColor, onTap: _connect)])
                       ]
                       else Padding(padding: const EdgeInsets.only(top: 8), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                        Text("ID: ${_idController.text.toUpperCase()} | BPM: $_heartRate", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier', fontSize: 14)),
+                        Text("ID: ${_idController.text.toUpperCase()}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier', fontSize: 14)),
                         IconButton(icon: const Icon(Icons.link_off, color: kSciFiRed), onPressed: _disconnect)
                       ]))
                     ]),
@@ -436,13 +500,24 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
                     borderColor: primaryColor,
                     child: Column(children: [
                       Row(children: [
-                        Expanded(child: SciFiButton(label: "SITREP", icon: Icons.assignment, color: Colors.blue, onTap: _sendSitrep)),
+                        // UPDATED BUTTON ROW WITH AR
+                        Expanded(child: SciFiButton(label: "BIO", icon: Icons.monitor_heart, color: _isBioActive ? kSciFiRed : Colors.grey, onTap: _openBioScanner)),
+                        const SizedBox(width: 4),
+                        Expanded(child: SciFiButton(label: "AR", icon: Icons.view_in_ar, color: kSciFiCyan, onTap: _openAR)),
                         const SizedBox(width: 4),
                         Expanded(child: SciFiButton(label: "CAM", icon: Icons.camera_alt, color: Colors.purpleAccent, onTap: _sendTacticalImage)),
+                      ]),
+                      const SizedBox(height: 4),
+                      Row(children: [
+                        Expanded(child: SciFiButton(label: "SITREP", icon: Icons.assignment, color: Colors.blue, onTap: _sendSitrep)),
                         const SizedBox(width: 4),
                         Expanded(child: SciFiButton(label: "LOGS", icon: _hasUnread ? Icons.mark_email_unread : Icons.history, color: _hasUnread ? kSciFiGreen : Colors.white, onTap: _showLogs)),
                       ]),
                       const SizedBox(height: 8),
+
+                      Text(_bioStatus, style: TextStyle(color: _isBioActive ? kSciFiGreen : Colors.grey, fontSize: 10, fontFamily: 'Courier')),
+                      const SizedBox(height: 8),
+
                       GestureDetector(
                           onLongPress: _activateSOS,
                           child: Container(

@@ -5,7 +5,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
+import 'package:latlong2/latlong.dart' hide Path; // FIX: Hide Path from latlong2 to avoid conflict
 import 'package:intl/intl.dart';
 import 'package:encrypt/encrypt.dart' as enc;
 import 'package:audioplayers/audioplayers.dart';
@@ -19,8 +19,8 @@ const String kFixedIV =      'HAWKLINK_IV_16ch';
 
 // --- DATA MODELS ---
 class SoldierUnit {
-  String id; String role; LatLng location; double heading; int battery; int bpm; String status; DateTime lastSeen; Socket? socket; List<LatLng> pathHistory;
-  SoldierUnit({required this.id, this.role="ASSAULT", required this.location, this.heading=0.0, this.battery=100, this.bpm=75, this.status="IDLE", required this.lastSeen, this.socket, List<LatLng>? history}) : pathHistory = history ?? [];
+  String id; String role; LatLng location; double heading; int battery; int bpm; int spO2; String status; DateTime lastSeen; Socket? socket; List<LatLng> pathHistory;
+  SoldierUnit({required this.id, this.role="ASSAULT", required this.location, this.heading=0.0, this.battery=100, this.bpm=75, this.spO2=98, this.status="IDLE", required this.lastSeen, this.socket, List<LatLng>? history}) : pathHistory = history ?? [];
 }
 class TacticalWaypoint {
   String id; String type; LatLng location; DateTime created;
@@ -66,6 +66,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   late final _encrypter = enc.Encrypter(enc.AES(_key));
   final MapController _mapController = MapController();
   late AnimationController _pulseController;
+  late AnimationController _ekgController;
   String? _selectedUnitId;
   bool _showGrid = true;
   bool _showTrails = true;
@@ -78,8 +79,26 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   List<LatLng> _tempDrawPoints = [];
   List<LatLng> _activeDangerZone = [];
 
-  @override void initState() { super.initState(); _startServer(); _getLocalIps(); _loadLogs(); _pulseController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(); _sfxPlayer.setReleaseMode(ReleaseMode.stop); _alertPlayer.setReleaseMode(ReleaseMode.stop); }
-  @override void dispose() { _sfxPlayer.dispose(); _alertPlayer.dispose(); _pulseController.dispose(); super.dispose(); }
+  @override
+  void initState() {
+    super.initState();
+    _startServer();
+    _getLocalIps();
+    _loadLogs();
+    _pulseController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat();
+    _ekgController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat();
+    _sfxPlayer.setReleaseMode(ReleaseMode.stop);
+    _alertPlayer.setReleaseMode(ReleaseMode.stop);
+  }
+
+  @override
+  void dispose() {
+    _sfxPlayer.dispose();
+    _alertPlayer.dispose();
+    _pulseController.dispose();
+    _ekgController.dispose();
+    super.dispose();
+  }
 
   // --- AUDIO & LOGIC ---
   Future<void> _playSfx(String f) async { if(!_audioEnabled) return; try{ if(_sfxPlayer.state==PlayerState.playing) await _sfxPlayer.stop(); await _sfxPlayer.play(AssetSource('sounds/$f')); }catch(e){_audioEnabled=false;} }
@@ -93,78 +112,45 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   void _removeClient(Socket c) { setState(() { _units.removeWhere((u)=>u.socket==c); _clientBuffers.remove(c); }); }
   void _handleData(Socket c, List<int> d) { if(!_clientBuffers.containsKey(c)) _clientBuffers[c]=[]; _clientBuffers[c]!.addAll(d); List<int> b=_clientBuffers[c]!; while(true){ int i=b.indexOf(10); if(i==-1) break; List<int> p=b.sublist(0,i); b=b.sublist(i+1); _clientBuffers[c]=b; _processPacket(c,p); } }
   void _processPacket(Socket c, List<int> b) async { try{ final s=utf8.decode(b).trim(); if(s.isEmpty) return; final dec=_encrypter.decrypt64(s, iv:_iv); final j=jsonDecode(dec); if(j['type']=='STATUS') _updateUnit(c,j); else if(j['type']=='CHAT'||j['type']=='ACK'){ _log(j['sender'],j['content']); if(j['content'].contains("SOS")) _playAlert('alert.mp3'); if(j['type']=='ACK') _playSfx('connect.mp3'); } else if(j['type']=='IMAGE'){ String p=await _saveImageToDisk(j['sender'],j['content']); _log(j['sender'], "📸 INTEL RECEIVED", imagePath:p); _playSfx('connect.mp3'); } }catch(e){} }
-  void _updateUnit(Socket s, Map<String,dynamic> d) { setState(() { final id=d['id']; final idx=_units.indexWhere((u)=>u.id==id); final loc=LatLng(d['lat'],d['lng']); if(idx!=-1){ _units[idx].location=loc; _units[idx].heading=(d['head']??0.0).toDouble(); _units[idx].role=d['role']??"ASSAULT"; _units[idx].battery=d['bat']; _units[idx].bpm=d['bpm']??75; _units[idx].status=d['state']; _units[idx].lastSeen=DateTime.now(); _units[idx].socket=s; if(_units[idx].pathHistory.isEmpty || const Distance().as(LengthUnit.Meter, _units[idx].pathHistory.last, loc)>5) _units[idx].pathHistory.add(loc); } else { _units.add(SoldierUnit(id:id, location:loc, role:d['role']??"ASSAULT", battery:d['bat'], bpm:d['bpm']??75, status:d['state'], lastSeen:DateTime.now(), socket:s, history:[loc])); _log("NET", "UNIT REGISTERED: $id"); _playSfx('connect.mp3'); } }); }
+  void _updateUnit(Socket s, Map<String,dynamic> d) { setState(() { final id=d['id']; final idx=_units.indexWhere((u)=>u.id==id); final loc=LatLng(d['lat'],d['lng']); if(idx!=-1){ _units[idx].location=loc; _units[idx].heading=(d['head']??0.0).toDouble(); _units[idx].role=d['role']??"ASSAULT"; _units[idx].battery=d['bat']; _units[idx].bpm=d['bpm']??75; _units[idx].spO2=d['spo2']??98; _units[idx].status=d['state']; _units[idx].lastSeen=DateTime.now(); _units[idx].socket=s; if(_units[idx].pathHistory.isEmpty || const Distance().as(LengthUnit.Meter, _units[idx].pathHistory.last, loc)>5) _units[idx].pathHistory.add(loc); } else { _units.add(SoldierUnit(id:id, location:loc, role:d['role']??"ASSAULT", battery:d['bat'], bpm:d['bpm']??75, spO2:d['spo2']??98, status:d['state'], lastSeen:DateTime.now(), socket:s, history:[loc])); _log("NET", "UNIT REGISTERED: $id"); _playSfx('connect.mp3'); } }); }
   void _log(String s, String m, {String? imagePath}) { String t=DateFormat('HH:mm:ss').format(DateTime.now()); String p=m.contains("COPY")?"✅ ":""; String e="$p[$t] $s: $m"; setState(()=>_logs.insert(0, {'text':e, 'image':imagePath})); _saveLog(e); }
   void _broadcastOrder(String t) { if(t.isEmpty) return; String p=_encrypter.encrypt(jsonEncode({'type':'CHAT', 'sender':'COMMAND', 'content':t}), iv:_iv).base64; for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){} _log("CMD", "BROADCAST: $t"); _cmdController.clear(); _playSfx('order.mp3'); }
   void _issueMoveOrder(LatLng d) { if(_isDrawingMode||_placingWaypointType!=null||_isDeleteWaypointMode||_selectedUnitId==null) return; try{ final u=_units.firstWhere((x)=>x.id==_selectedUnitId); String p=_encrypter.encrypt(jsonEncode({'type':'MOVE_TO', 'sender':'COMMAND', 'content':"MOVE TO ${d.latitude.toStringAsFixed(4)}, ${d.longitude.toStringAsFixed(4)}", 'lat':d.latitude, 'lng':d.longitude}), iv:_iv).base64; u.socket?.add(utf8.encode("$p\n")); _log("CMD", "VECTOR ASSIGNED: $u.id"); _playSfx('order.mp3'); }catch(e){} }
   void _onMapTap(TapPosition p, LatLng l) { if(_isDeleteWaypointMode){ _removeWaypointNear(l); setState(()=>_isDeleteWaypointMode=false); return; } if(_placingWaypointType!=null){ _deployWaypoint(l, _placingWaypointType!); setState(()=>_placingWaypointType=null); return; } if(_isDrawingMode){ setState(()=>_tempDrawPoints.add(l)); return; } setState(()=>_selectedUnitId=null); }
   void _deployWaypoint(LatLng l, String t) { String id="${t}_${DateTime.now().millisecondsSinceEpoch}"; TacticalWaypoint w=TacticalWaypoint(id:id, type:t, location:l, created:DateTime.now()); setState(()=>_waypoints.add(w)); String p=_encrypter.encrypt(jsonEncode({'type':'WAYPOINT', 'action':'ADD', 'data':w.toJson()}), iv:_iv).base64; for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){} _log("CMD", "WAYPOINT DEPLOYED: $t"); _playSfx('order.mp3'); }
-
-  // --- FIXED DELETE LOGIC ---
   void _removeWaypointNear(LatLng point) {
     try {
       TacticalWaypoint? closestWp;
       double minDistance = double.infinity;
-      const double threshold = 500.0; // Meters
-
+      const double threshold = 500.0;
       final distanceCalc = const Distance();
-
-      // Find the closest marker, not just the first one
       for (var wp in _waypoints) {
         final double dist = distanceCalc.as(LengthUnit.Meter, wp.location, point);
-        if (dist < threshold) {
-          if (dist < minDistance) {
-            minDistance = dist;
-            closestWp = wp;
-          }
-        }
+        if (dist < threshold && dist < minDistance) { minDistance = dist; closestWp = wp; }
       }
-
       if (closestWp != null) {
         setState(() => _waypoints.remove(closestWp));
-
-        final packet = _encryptPacket({'type': 'WAYPOINT', 'action': 'REMOVE', 'id': closestWp!.id});
-        final delimitedPacket = utf8.encode("$packet\n");
-        for (var u in _units) { try { u.socket?.add(delimitedPacket); } catch (e) {} }
-
-        _log("CMD", "WAYPOINT REMOVED: ${closestWp.type}");
-        _playSfx('connect.mp3');
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("NO WAYPOINT NEARBY")));
+        final p = _encrypter.encrypt(jsonEncode({'type':'WAYPOINT', 'action':'REMOVE', 'id':closestWp!.id}), iv:_iv).base64;
+        for (var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){}
+        _log("CMD", "WAYPOINT REMOVED"); _playSfx('connect.mp3');
       }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("ERROR REMOVING WAYPOINT")));
-    }
+    } catch (e) {}
   }
-
   void _toggleDrawingMode() { setState(() { _isDrawingMode=!_isDrawingMode; _tempDrawPoints=[]; }); }
   void _deployCustomZone() { if(_tempDrawPoints.length<3) return; setState(() { _activeDangerZone=List.from(_tempDrawPoints); _isDrawingMode=false; _tempDrawPoints=[]; }); List<List<double>> pts=_activeDangerZone.map((p)=>[p.latitude, p.longitude]).toList(); String p=_encrypter.encrypt(jsonEncode({'type':'ZONE', 'sender':'COMMAND', 'points':pts}), iv:_iv).base64; for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){} _log("CMD", "ZONE DEPLOYED"); _playAlert('alert.mp3'); }
   void _clearZone() { setState(() { _activeDangerZone=[]; _tempDrawPoints=[]; }); String p=_encrypter.encrypt(jsonEncode({'type':'ZONE', 'sender':'COMMAND', 'points':[]}), iv:_iv).base64; for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){} _log("CMD", "ZONE CLEARED"); }
-  String _encryptPacket(Map<String, dynamic> d) => _encrypter.encrypt(jsonEncode(d), iv:_iv).base64;
+
   IconData _getRoleIcon(String r) { switch(r){ case "MEDIC": return Icons.medical_services; case "SCOUT": return Icons.visibility; case "SNIPER": return Icons.gps_fixed; case "ENGINEER": return Icons.build; default: return Icons.shield; } }
+
+  IconData _getWaypointIcon(String type) {
+    switch(type) { case "RALLY": return Icons.flag; case "ENEMY": return Icons.warning_amber_rounded; case "MED": return Icons.medical_services; case "LZ": return Icons.flight_land; default: return Icons.location_on; }
+  }
+  Color _getWaypointColor(String type) {
+    switch(type) { case "RALLY": return Colors.blueAccent; case "ENEMY": return kSciFiRed; case "MED": return Colors.white; case "LZ": return kSciFiGreen; default: return kSciFiCyan; }
+  }
+
   List<LatLng> _createVisionCone(LatLng c, double h) { double r=0.0005; double a=h*(math.pi/180); double w=45*(math.pi/180); return [c, LatLng(c.latitude+r*math.cos(a-w/2), c.longitude+r*math.sin(a-w/2)), LatLng(c.latitude+r*math.cos(a), c.longitude+r*math.sin(a)), LatLng(c.latitude+r*math.cos(a+w/2), c.longitude+r*math.sin(a+w/2)), c]; }
   void _showImagePreview(String path) { showDialog(context: context, builder: (ctx) => Dialog(backgroundColor: Colors.transparent, child: Stack(alignment: Alignment.center, children: [Image.file(File(path)), Positioned(top: 10, right: 10, child: IconButton(icon: const Icon(Icons.close, color: Colors.white, size: 30), onPressed: () => Navigator.pop(ctx)))]))); }
-
-  // --- ICON HELPER ---
-  IconData _getWaypointIcon(String type) {
-    switch (type) {
-      case "RALLY": return Icons.flag;
-      case "ENEMY": return Icons.warning_amber_rounded;
-      case "MED": return Icons.medical_services;
-      case "LZ": return Icons.flight_land;
-      default: return Icons.location_on;
-    }
-  }
-
-  Color _getWaypointColor(String type) {
-    switch (type) {
-      case "RALLY": return Colors.blueAccent;
-      case "ENEMY": return kSciFiRed;
-      case "MED": return Colors.white;
-      case "LZ": return kSciFiGreen;
-      default: return Colors.orange;
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -181,6 +167,8 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                   children: [
                     const SciFiHeader(label: "HAWKLINK // C2"),
                     Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text("IP: ${_myIps.isNotEmpty ? _myIps.first : '...'}", style: const TextStyle(color: kSciFiGreen, fontSize: 10, fontFamily: 'Courier New')), const Text("SECURE: AES-256", style: TextStyle(color: kSciFiCyan, fontSize: 10, fontFamily: 'Courier New'))])),
+
+                    // --- BIO-TELEMETRY PLATFORM ---
                     Expanded(
                       flex: 3,
                       child: ListView.builder(
@@ -188,12 +176,79 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                         itemBuilder: (ctx, i) {
                           final u = _units[i];
                           bool isSelected = u.id == _selectedUnitId;
+                          bool isCritical = u.status == "SOS" || u.bpm > 140;
+
+                          // Dynamic Color Logic
+                          Color mainColor = isCritical ? kSciFiRed : kSciFiGreen;
+                          if (isSelected) mainColor = kSciFiCyan;
+
                           return GestureDetector(
                             onTap: () { setState(() => _selectedUnitId = u.id); _mapController.move(u.location, 17); },
                             child: SciFiPanel(
-                              borderColor: u.status=="SOS" ? kSciFiRed : (isSelected ? kSciFiCyan : kSciFiGreen.withOpacity(0.5)),
-                              title: "UNIT ${u.id}",
-                              child: Row(children: [Icon(_getRoleIcon(u.role), color: u.status=="SOS" ? kSciFiRed : kSciFiGreen), const SizedBox(width: 10), Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(u.role, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Orbitron')), Text("BAT: ${u.battery}% | BPM: ${u.bpm}", style: const TextStyle(color: Colors.grey, fontSize: 10))]), const Spacer(), if(u.status=="SOS") const BlinkingText("SOS", color: kSciFiRed)]),
+                              borderColor: mainColor.withOpacity(0.8),
+                              showBg: true,
+                              child: Column(
+                                children: [
+                                  // Header: ID and Role
+                                  Row(children: [
+                                    Icon(_getRoleIcon(u.role), color: mainColor, size: 18),
+                                    const SizedBox(width: 8),
+                                    Text(u.id, style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Orbitron', fontSize: 14)),
+                                    const Spacer(),
+                                    if(u.status=="SOS") const BlinkingText("SOS", color: kSciFiRed)
+                                    else Text("ACTIVE", style: TextStyle(color: mainColor, fontSize: 10))
+                                  ]),
+                                  const SizedBox(height: 8),
+
+                                  // Vitals Grid
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      // Heart Rate Block
+                                      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                        Text("BPM", style: TextStyle(color: Colors.grey, fontSize: 8)),
+                                        Row(children: [
+                                          Text("${u.bpm}", style: TextStyle(color: isCritical ? kSciFiRed : Colors.white, fontSize: 20, fontFamily: 'Orbitron', fontWeight: FontWeight.bold)),
+                                          const SizedBox(width: 4),
+                                          Icon(Icons.monitor_heart, size: 12, color: isCritical ? kSciFiRed : kSciFiGreen)
+                                        ]),
+                                      ]),
+                                      // EKG Graph Animation
+                                      SizedBox(
+                                        width: 80, height: 30,
+                                        child: CustomPaint(painter: EkgPainter(animationValue: _ekgController.value, color: isCritical ? kSciFiRed : kSciFiGreen)),
+                                      ),
+                                      // SpO2 Block
+                                      Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                                        Text("SpO2", style: TextStyle(color: Colors.grey, fontSize: 8)),
+                                        Row(children: [
+                                          Text("${u.spO2}%", style: TextStyle(color: kSciFiCyan, fontSize: 20, fontFamily: 'Orbitron', fontWeight: FontWeight.bold)),
+                                        ]),
+                                      ]),
+                                    ],
+                                  ),
+
+                                  const SizedBox(height: 8),
+                                  // Battery Bar
+                                  Row(children: [
+                                    Text("BAT", style: TextStyle(color: Colors.grey, fontSize: 8)),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.circular(2),
+                                        child: LinearProgressIndicator(
+                                          value: u.battery / 100,
+                                          backgroundColor: Colors.white10,
+                                          valueColor: AlwaysStoppedAnimation(u.battery < 20 ? kSciFiRed : kSciFiGreen),
+                                          minHeight: 4,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text("${u.battery}%", style: TextStyle(color: Colors.grey, fontSize: 8)),
+                                  ])
+                                ],
+                              ),
                             ),
                           );
                         },
@@ -340,4 +395,43 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
       ),
     );
   }
+}
+
+// --- EKG PAINTER (The animating graph) ---
+class EkgPainter extends CustomPainter {
+  final double animationValue;
+  final Color color;
+  EkgPainter({required this.animationValue, required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+
+    final path = Path();
+    final width = size.width;
+    final height = size.height;
+    final mid = height / 2;
+
+    for (double x = 0; x <= width; x++) {
+      // Create a moving sine wave effect
+      double offset = (x / width) + animationValue;
+      double y = mid + math.sin(offset * math.pi * 10) * (height / 3);
+
+      // Add a "Pulse" spike occasionally
+      if ((offset * 5) % 1 > 0.9) {
+        y -= height / 2;
+      }
+
+      if (x == 0) path.moveTo(x, y);
+      else path.lineTo(x, y);
+    }
+
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant EkgPainter oldDelegate) => true;
 }

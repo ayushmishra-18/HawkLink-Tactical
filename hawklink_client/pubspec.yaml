@@ -34,6 +34,8 @@ dependencies:
 
   # Security (Encryption)
   encrypt: ^5.0.1
+  camera: ^0.11.3
+  noise_meter: ^5.0.2
 
 dev_dependencies:
   flutter_test:
