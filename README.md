@@ -40,7 +40,7 @@ Command\_Console :- [Command](commander_console/assets/screenshots/commander_con
 
 
 
-The field operative's view. Features GPS tracking, SOS beacon, stealth mode, and secure comms.
+The field operative's view. Features GPS tracking, SOS beacon, stealth mode, image intel, AR cam, and secure comms.
 
 
 
