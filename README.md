@@ -22,7 +22,7 @@ This repository contains two independent yet interconnected applications:
 
 
 
-The tactical "God View" running on Windows. Features 3D satellite terrain, unit tracking, and waypoint management.
+The tactical "God View" (C2 (Command \& Control) dashboard for strategic oversight) running on Windows. Features 3D satellite terrain, unit tracking, and waypoint management.
 
 
 
@@ -58,27 +58,25 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)
 
 
 
-#### **📡 Core Architecture**
+#### **📡 1. Secure Offline Communication**
 
 
 
-* Offline-First: Works over Local Wi-Fi, Hotspot, or Mesh VPN (Tailscale). No internet required.
+* Zero-Internet Dependency: Works entirely over local LAN, Hotspot, or Mesh VPN (Tailscale).
 
 
 
-* Secure TCP Mesh: Custom encrypted socket protocol for low-latency data transmission.
+* AES-256 Encryption: All packets (chat, GPS, images, bio-data) are encrypted before transmission.
 
 
 
-* AES-256 Encryption: All data (chat, location, images) is encrypted before transmission.
+* Custom TCP Protocol: Binary-efficient data exchange for low-latency performance.
 
 
 
-* Cross-Platform: Commander (Windows/Linux/Mac) + Soldier (Android/iOS).
 
 
-
-#### **🖥️ Commander Console View (Desktop)**
+#### **🖥️ 2. Commander Console View (Desktop)**
 
 
 
@@ -86,11 +84,19 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)
 
 
 
+* Live Bio-Telemetry Platform: Real-time visualization of soldier status:
+
+
+
+&nbsp;	EKG Graph: Live animating heart rate monitor.
+
+
+
+&nbsp;	SpO2 \& Battery: Critical vital stats at a glance.
+
+
+
 * Real-Time Unit Tracking: Live position updates with Breadcrumb Trails.
-
-
-
-* Biometric Feed: Monitors soldier heart rate (BPM) and battery levels.
 
 
 
@@ -98,17 +104,17 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)
 
 
 
- 	1. 🏁 Rally Point
+ 	🏁 Rally Point
 
- 	2. 💀 Enemy Contact
+ 	💀 Enemy Contact
 
- 	3. 🏥 Medical Cache
+ 	🏥 Medical Cache
 
- 	4. 🚁 Landing Zone (LZ)
+ 	🚁 Landing Zone (LZ)
 
 
 
-* Geofencing: Draw custom "Red Zones" (Danger Areas). Automatically warns soldiers if they enter.
+* Dynamic Geofencing: Draw "Red Zones" on the map; soldiers inside receive immediate audio/visual warnings.
 
 
 
@@ -128,7 +134,19 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)
 
 
 
+* AR Compass (Augmented Reality): Heads-Up Display (HUD) overlaying waypoints and distances on the real-world camera feed.
+
+
+
 * Compass Vision: Transmits real-time magnetic heading (Cone of Vision) to the commander.
+
+
+
+* Optical Bio-Scanner: Uses the phone's camera and flash \[PPG (Photoplethysmography) technology to measure Heart Rate without external hardware.
+
+
+
+* Acoustic Gunshot Detection: Passive microphone monitoring that automatically detects high-decibel spikes (>95dB) and sends a "CONTACT REPORT" to Command.
 
 
 
@@ -180,7 +198,7 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)
 
 ```
 
-git clone \\\[https://github.com/ayushmishra-18/HawkLink-Tactical.git](https://github.com/ayushmishra-18/HawkLink-Tactical.git)
+git clone \\\\\\\[https://github.com/ayushmishra-18/HawkLink-Tactical.git](https://github.com/ayushmishra-18/HawkLink-Tactical.git)
 
 cd HawkLink-Tactical
 
@@ -200,7 +218,7 @@ cd HawkLink-Tactical
 
 ```
 
-cd commander\\\\\\\_console
+cd commander\\\\\\\\\\\\\\\_console
 
 
 
@@ -224,13 +242,13 @@ flutter run -d windows
 
 
 
-###### Run this on an Android device or emulator.
+###### Run this on an physical Android device(Sensors required)
 
 
 
 ```
 
-cd soldier\\\\\\\_app
+cd soldier\\\\\\\\\\\\\\\_app
 
 
 
@@ -244,9 +262,7 @@ flutter run -d android
 
 
 
-###### Enter the Commander's IP address and click the Link icon to connect.
-
-
+###### Enter the Commander's IP address and click on Link 
 
 #### **🧪 Potential Applications**
 
@@ -288,11 +304,22 @@ flutter run -d android
 
 
 
+* State Management: setState (Optimized for low overhead)
+
+
+
 * Security: encrypt (AES-CBC)
 
 
 
-* Sensors: geolocator, flutter\_compass, battery\_plus
+* Sensors: 
+
+&nbsp;	geolocator \& flutter\_compass  (Navigation)
+
+&nbsp;	camera  (AR \& BIO-scanning)
+	noise\_meter  (Aciustic Detection)
+
+&nbsp;	battery\_plus(Hardware monitering) 
 
 
 
