@@ -9,8 +9,8 @@ class AcousticSensor {
   bool _isListening = false;
 
   // Threshold in Decibels (Adjusted for demo stability)
-  // Was 85.0 -> Now 95.0 (Requires a sharp, loud clap near mic)
-  static const double kGunshotThreshold = 95.0;
+  // Was 95.0 -> Now 110.0 (Requires a very loud sound/clap near mic)
+  static const double kGunshotThreshold = 110.0;
 
   DateTime _lastTrigger = DateTime.now();
 

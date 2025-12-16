@@ -32,7 +32,7 @@ Screenshot:-
 
 
 
-Command\_Console :- [Command](commander_console/assets/screenshots/commander_console.jpg)
+Command\_Console :- [Command](commander_console/assets/screenshots/commander_console.png)
 
 
 
@@ -48,7 +48,7 @@ Screenshot:-
 
 
 
-Soldier:- [Alpha-1](hawklink_client/assets/screenshots/ALPHA-1.jpg)  [Bravo-1](hawklink_client/assets/screenshots/BRAVO-1.jpg)  [Delta-1](hawklink_client/assets/screenshots/DELTA-1.jpg)
+Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)  [Bravo-1](hawklink_client/assets/screenshots/BRAVO-1.jpg)  [Delta-1](hawklink_client/assets/screenshots/DELTA-1.jpg)
 
 
 

@@ -12,10 +12,11 @@ import 'package:intl/intl.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_compass/flutter_compass.dart';
+import 'package:http/http.dart' as http;
 import 'sci_fi_ui.dart';
 import 'heart_rate_scanner.dart';
-import 'ar_compass.dart'; // RESTORED AR IMPORT
-import 'acoustic_sensor.dart'; // RESTORED ACOUSTIC SENSOR
+import 'ar_compass.dart';
+import 'acoustic_sensor.dart';
 
 // --- CONFIGURATION ---
 const int kPort = 4444;
@@ -82,12 +83,17 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   List<TacticalWaypoint> _waypoints = [];
 
   // --- BIO METRICS ---
-  int _heartRate = 0;
+  int _heartRate = 75;
   int _spO2 = 98;
+  int _systolic = 120;
+  int _diastolic = 80;
+  String get _bp => "$_systolic/$_diastolic";
+  double _temp = 98.6;
   bool _isBioActive = false;
 
   // --- SENSORS ---
   Timer? _biometricTimer;
+  Timer? _weatherTimer;
   final MapController _mapController = MapController();
   LatLng _myLocation = const LatLng(40.7128, -74.0060);
   double _heading = 0.0;
@@ -103,7 +109,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   late AnimationController _sosController;
   List<int> _incomingBuffer = [];
 
-  // RESTORED SENSORS
   AcousticSensor? _acousticSensor;
   bool _isGunshotDetected = false;
 
@@ -114,18 +119,48 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     _startGpsTracking();
     _startCompass();
     _initTts();
-    _initAcousticSensor(); // Auto-start gunshot detection
+    _initAcousticSensor();
 
-    // SIMULATION LOOP
+    // BIO-SIMULATION LOOP
     _biometricTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
-      if (mounted && _isBioActive) {
+      if (mounted) {
         setState(() {
           int base = _sosController.isAnimating ? 120 : 75;
           _heartRate = base + Random().nextInt(10) - 5;
           _spO2 = 96 + Random().nextInt(4);
+          _systolic = 115 + Random().nextInt(10);
+          _diastolic = 75 + Random().nextInt(10);
+          _temp = 98.0 + Random().nextDouble();
         });
       }
     });
+
+    // WEATHER API LOOP
+    _weatherTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
+      if (_hasFix) _fetchRealWeather();
+    });
+    Future.delayed(const Duration(seconds: 3), () {
+      if (_hasFix) _fetchRealWeather();
+    });
+  }
+
+  Future<void> _fetchRealWeather() async {
+    try {
+      final url = Uri.parse('https://api.open-meteo.com/v1/forecast?latitude=${_myLocation.latitude}&longitude=${_myLocation.longitude}&current_weather=true');
+      final response = await http.get(url);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final double tempC = data['current_weather']['temperature'];
+        if (mounted) {
+          setState(() {
+            _temp = (tempC * 9/5) + 32; // Convert to F
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint("Weather Error: $e");
+    }
   }
 
   void _initAcousticSensor() {
@@ -135,31 +170,39 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
 
   void _handleGunshot() {
     if (_socket == null) return;
-
-    // Visual Alert
     setState(() => _isGunshotDetected = true);
     Future.delayed(const Duration(seconds: 2), () {
       if(mounted) setState(() => _isGunshotDetected = false);
     });
-
-    // Send Alert
     _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': '!!! SHOTS FIRED !!!'});
-
     if (!widget.isStealth) _tts.speak("Contact! Shots fired!");
   }
 
   void _openBioScanner() {
     setState(() { _isBioActive = true; _bioStatus = "BIO-SCANNER ACTIVE"; });
-    showDialog(context: context, barrierDismissible: false, builder: (ctx) => HeartRateScanner(onBpmDetected: (bpm) { setState(() { _heartRate = bpm; }); })).then((_) { setState(() => _bioStatus = "LAST SCAN: $_heartRate BPM"); });
+    showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => HeartRateScanner(
+            onReadingsDetected: (bpm, spo2, sys, dia) {
+              setState(() {
+                _heartRate = bpm;
+                _spO2 = spo2;
+                _systolic = sys;
+                _diastolic = dia;
+              });
+            }
+        )
+    ).then((_) {
+      setState(() => _bioStatus = "LAST: $_heartRate BPM | $_spO2% | ${_temp.toStringAsFixed(1)}°F");
+    });
   }
 
-  // --- AR VIEW OPENER ---
   void _openAR() {
     if (!_hasFix) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("WAITING FOR GPS...")));
       return;
     }
-    // Navigate to AR View
     Navigator.push(context, MaterialPageRoute(builder: (c) => ArCompassView(waypoints: _waypoints, myLocation: _myLocation)));
   }
 
@@ -174,6 +217,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     _socket?.destroy();
     _heartbeatTimer?.cancel();
     _biometricTimer?.cancel();
+    _weatherTimer?.cancel();
     _acousticSensor?.stop();
     _sosController.dispose();
     _tts.stop();
@@ -208,6 +252,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
         setState(() {
           _myLocation = LatLng(position.latitude, position.longitude);
           _hasFix = true;
+          if (_temp == 0.0) _fetchRealWeather();
         });
         if (_dangerZone.isNotEmpty) {
           bool currentlyInDanger = _isPointInside(_myLocation, _dangerZone);
@@ -246,6 +291,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       _incomingBuffer = [];
       _socket!.listen((data) => _handleIncomingPacket(data), onDone: () { if (mounted) setState(() { _status = "CONNECTION LOST"; _socket = null; }); if (!widget.isStealth) _tts.speak("Connection Lost"); }, onError: (e) { if (mounted) setState(() { _status = "ERROR: $e"; _socket = null; }); });
       _heartbeatTimer?.cancel();
+      // HARDENING: Send heartbeat every 1 second
       _heartbeatTimer = Timer.periodic(const Duration(seconds: 1), (timer) => _sendHeartbeat());
     } catch (e) { if (mounted) setState(() { _status = "FAILED TO CONNECT"; _socket = null; }); }
   }
@@ -265,6 +311,12 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   }
 
   void _processMessage(Map<String, dynamic> json) {
+    // --- KILL SWITCH ---
+    if (json['type'] == 'KILL' && json['target'] == _idController.text.toUpperCase()) {
+      _executeSelfDestruct();
+      return;
+    }
+
     if (json['type'] == 'ZONE') {
       List<dynamic> points = json['points'];
       setState(() => _dangerZone = points.map((p) => LatLng(p[0], p[1])).toList());
@@ -292,13 +344,48 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     }
   }
 
+  // --- HARDENING: KILL SWITCH ---
+  Future<void> _executeSelfDestruct() async {
+    _socket?.destroy();
+    if (!mounted) exit(0);
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => Scaffold(
+        backgroundColor: Colors.blue[900],
+        body: Padding(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: const [
+              Icon(Icons.error_outline, size: 80, color: Colors.white),
+              SizedBox(height: 20),
+              Text("SYSTEM HALTED", style: TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.bold, fontFamily: 'Courier')),
+              SizedBox(height: 10),
+              Text("Error Code: 0xDEADBEEF", style: TextStyle(color: Colors.white, fontFamily: 'Courier')),
+              Text("Memory Dump: Complete.", style: TextStyle(color: Colors.white, fontFamily: 'Courier')),
+              Text("Zeroization: SUCCESS.", style: TextStyle(color: Colors.white, fontFamily: 'Courier')),
+            ],
+          ),
+        ),
+      ),
+    );
+    await Future.delayed(const Duration(seconds: 3));
+    exit(0);
+  }
+
   void _onMessageReceived(Map<String, dynamic> msg) {
     setState(() {
       _messages.insert(0, {'time': DateTime.now(), 'sender': msg['sender'], 'content': msg['content'], 'type': msg['type']});
       _hasUnread = true;
       _pendingOrder = msg;
     });
-    if (!widget.isStealth) _tts.speak(msg['content']);
+    if (!widget.isStealth) {
+      // FIX: Clean symbols to prevent TTS reading "Greater Than"
+      String speech = msg['content'].replaceAll(RegExp(r'[^\w\s\.]'), '');
+      _tts.speak(speech);
+    }
   }
 
   void _sendHeartbeat() async {
@@ -307,7 +394,8 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       int bat = await _battery.batteryLevel;
       String state = _sosController.isAnimating ? "SOS" : "ACTIVE";
       if (_isInDanger) state = "DANGER";
-      _sendPacket({'type': 'STATUS', 'id': _idController.text.toUpperCase(), 'role': _selectedRole, 'lat': _myLocation.latitude, 'lng': _myLocation.longitude, 'head': _heading, 'bat': bat, 'state': state, 'bpm': _heartRate, 'spo2': _spO2});
+      // INCLUDE BP and TEMP
+      _sendPacket({'type': 'STATUS', 'id': _idController.text.toUpperCase(), 'role': _selectedRole, 'lat': _myLocation.latitude, 'lng': _myLocation.longitude, 'head': _heading, 'bat': bat, 'state': state, 'bpm': _heartRate, 'spo2': _spO2, 'bp': _bp, 'temp': _temp});
     } catch (e) {}
   }
 
@@ -500,7 +588,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
                     borderColor: primaryColor,
                     child: Column(children: [
                       Row(children: [
-                        // UPDATED BUTTON ROW WITH AR
                         Expanded(child: SciFiButton(label: "BIO", icon: Icons.monitor_heart, color: _isBioActive ? kSciFiRed : Colors.grey, onTap: _openBioScanner)),
                         const SizedBox(width: 4),
                         Expanded(child: SciFiButton(label: "AR", icon: Icons.view_in_ar, color: kSciFiCyan, onTap: _openAR)),

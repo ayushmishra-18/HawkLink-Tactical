@@ -45,5 +45,33 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+
+	<!-- PERMISSION: Location (While In Use) -->
+        <key>NSLocationWhenInUseUsageDescription</key>
+        <string>This app requires access to your location to report your position to the Commander Console.</string>
+
+        <!-- PERMISSION: Location (Always/Background) -->
+        <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+        <string>This app tracks your location in the background to ensure tactical awareness and safety even when the phone is locked.</string>
+
+        <!-- PERMISSION: Legacy Background Location -->
+        <key>NSLocationAlwaysUsageDescription</key>
+        <string>This app tracks your location in the background for tactical safety.</string>
+
+        <!-- PERMISSION: Local Network (Crucial for WiFi sockets) -->
+        <key>NSLocalNetworkUsageDescription</key>
+        <string>This app needs to connect to devices on the local network to send telemetry to the Commander Console.</string>
+        <key>NSBonjourServices</key>
+        <array>
+            <string>_http._tcp</string>
+        </array>
+
+        <!-- CAPABILITY: Background Modes -->
+        <key>UIBackgroundModes</key>
+        <array>
+            <string>location</string>
+            <string>processing</string>
+        </array>
+
 </dict>
 </plist>
