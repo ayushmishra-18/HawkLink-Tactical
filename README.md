@@ -200,7 +200,7 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)  [Bravo-1](h
 
 ```
 
-git clone \\\\\\\\\\\\\\\[https://github.com/ayushmishra-18/HawkLink-Tactical.git](https://github.com/ayushmishra-18/HawkLink-Tactical.git)
+git clone \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\[https://github.com/ayushmishra-18/HawkLink-Tactical.git](https://github.com/ayushmishra-18/HawkLink-Tactical.git)
 
 cd HawkLink-Tactical
 
@@ -220,7 +220,7 @@ cd HawkLink-Tactical
 
 ```
 
-cd commander\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_console
+cd commander\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_console
 
 
 
@@ -250,7 +250,7 @@ flutter run -d windows
 
 ```
 
-cd soldier\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_app
+cd soldier\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_app
 
 
 
@@ -379,12 +379,11 @@ noise\_meter  (Aciustic Detection)
 
 This project is developed for educational, research, and hackathon demonstration purposes.
 
-📄 License
----
+## 📄 License
 
 ###### 
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ###### 
 
