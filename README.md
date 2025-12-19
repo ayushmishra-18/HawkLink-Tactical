@@ -90,11 +90,11 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)  [Bravo-1](h
 
 
 
-&nbsp;	EKG Graph: Live animating heart rate monitor.
+ 	EKG Graph: Live animating heart rate monitor.
 
 
 
-&nbsp;	SpO2 \& Battery: Critical vital stats at a glance.
+ 	SpO2 \& Battery: Critical vital stats at a glance.
 
 
 
@@ -200,7 +200,7 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)  [Bravo-1](h
 
 ```
 
-git clone \\\\\\\[https://github.com/ayushmishra-18/HawkLink-Tactical.git](https://github.com/ayushmishra-18/HawkLink-Tactical.git)
+git clone \\\\\\\\\\\\\\\[https://github.com/ayushmishra-18/HawkLink-Tactical.git](https://github.com/ayushmishra-18/HawkLink-Tactical.git)
 
 cd HawkLink-Tactical
 
@@ -220,7 +220,7 @@ cd HawkLink-Tactical
 
 ```
 
-cd commander\\\\\\\\\\\\\\\_console
+cd commander\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_console
 
 
 
@@ -250,7 +250,7 @@ flutter run -d windows
 
 ```
 
-cd soldier\\\\\\\\\\\\\\\_app
+cd soldier\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_app
 
 
 
@@ -264,7 +264,7 @@ flutter run -d android
 
 
 
-###### Enter the Commander's IP address and click on Link 
+###### Enter the Commander's IP address and click on Link
 
 #### **🧪 Potential Applications**
 
@@ -314,14 +314,14 @@ flutter run -d android
 
 
 
-* Sensors: 
+* Sensors:
 
-&nbsp;	geolocator \& flutter\_compass  (Navigation)
+ 	geolocator \& flutter\_compass  (Navigation)
 
-&nbsp;	camera  (AR \& BIO-scanning)
-	noise\_meter  (Aciustic Detection)
+ 	camera  (AR \& BIO-scanning)
+noise\_meter  (Aciustic Detection)
 
-&nbsp;	battery\_plus(Hardware monitering) 
+ 	battery\_plus(Hardware monitering)
 
 
 
@@ -377,5 +377,28 @@ flutter run -d android
 
 
 
-###### This project is developed for educational, research, and hackathon demonstration purposes.
+This project is developed for educational, research, and hackathon demonstration purposes.
+
+📄 License
+---
+
+###### 
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+###### 
+
+#### ⚠️ Disclaimer
+
+###### 
+
+This software is a PROTOTYPE intended for educational and simulation purposes only.
+
+
+
+Not MilSpec: This application utilizes standard WiFi/TCP protocols and simulated encryption. It is not certified for real-world combat operations or classified communication.
+
+
+
+No Warranty: As per the MIT License, the software is provided "as is", without warranty of any kind. The developers are not liable for any damages or tactical failures arising from the use of this software.
 
