@@ -9,9 +9,9 @@ class AcousticSensor {
   NoiseMeter? _noiseMeter;
   bool _isListening = false;
 
-  // Threshold: 85.0 dB for easier testing (Simulated Gunshot/Clap)
+  // Threshold: 100.0 dB for easier testing (Simulated Gunshot/Clap)
   // In a real scenario, this would be closer to 110-120 dB
-  static const double kGunshotThreshold = 85.0;
+  static const double kGunshotThreshold = 100.0;
 
   DateTime _lastTrigger = DateTime.now();
 

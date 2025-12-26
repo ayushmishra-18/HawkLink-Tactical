@@ -27,8 +27,6 @@ const int kPort = 4444;
 const String kPreSharedKey = 'HAWKLINK_TACTICAL_SECURE_KEY_256';
 const String kFixedIV =      'HAWKLINK_IV_16ch';
 
-// NOTE: TacticalWaypoint class is in models.dart
-
 void main() {
   runApp(const SoldierApp());
 }
@@ -119,6 +117,9 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
 
   AcousticSensor? _acousticSensor;
   bool _isGunshotDetected = false;
+
+  // Distance Calc
+  final Distance _distanceCalc = const Distance();
 
   @override
   void initState() {
@@ -512,6 +513,13 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     }
   }
 
+  // --- WGS 84 Formatter ---
+  String _formatCoords(LatLng l) {
+    String latDir = l.latitude >= 0 ? "N" : "S";
+    String lngDir = l.longitude >= 0 ? "E" : "W";
+    return "${l.latitude.abs().toStringAsFixed(5)}° $latDir\n${l.longitude.abs().toStringAsFixed(5)}° $lngDir";
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool isSOS = _sosController.isAnimating;
@@ -580,6 +588,15 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
                         IconButton(icon: Icon(widget.isStealth ? Icons.visibility_off : Icons.visibility, color: primaryColor, size: 18), onPressed: widget.onToggleStealth)
                       ]),
 
+                      // --- NEW: DISPLAY LOCATION ---
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Text(_formatCoords(_myLocation),
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Colors.white70, fontSize: 12, fontFamily: 'Courier', letterSpacing: 1.0)
+                        ),
+                      ),
+
                       if (_isHeatStress)
                         Padding(
                           padding: const EdgeInsets.only(top: 4.0),
@@ -615,6 +632,37 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
                         const SizedBox(height: 8),
                         SciFiButton(label: "ACKNOWLEDGE", icon: Icons.check_circle, color: Colors.white, onTap: _acknowledgeOrder)
                       ]),
+                    ),
+                  ),
+
+                // --- NEW: Waypoint Distance HUD ---
+                if (_waypoints.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                    child: Container(
+                      height: 40,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        children: _waypoints.map((wp) {
+                          int dist = _distanceCalc.as(LengthUnit.Meter, _myLocation, wp.location).toInt();
+                          return Container(
+                            margin: const EdgeInsets.only(right: 8),
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                                color: _getWaypointColor(wp.type).withOpacity(0.2),
+                                border: Border.all(color: _getWaypointColor(wp.type)),
+                                borderRadius: BorderRadius.circular(4)
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(_getWaypointIcon(wp.type), color: _getWaypointColor(wp.type), size: 14),
+                                const SizedBox(width: 4),
+                                Text("${wp.type}: ${dist}m", style: const TextStyle(color: Colors.white, fontSize: 12, fontFamily: 'Orbitron'))
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                      ),
                     ),
                   ),
 
@@ -664,7 +712,24 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
               ],
             ),
           ),
-          Positioned(top: 220, right: 16, child: FloatingActionButton(mini: true, backgroundColor: kSciFiBlack, child: Icon(Icons.my_location, color: primaryColor), onPressed: () { if (_hasFix) _mapController.move(_myLocation, 17); })),
+
+          // --- RECENTER BUTTON (MOVED TO BOTTOM RIGHT) ---
+          Positioned(
+              bottom: 240,
+              right: 16,
+              child: FloatingActionButton(
+                  mini: true,
+                  backgroundColor: kSciFiBlack,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      side: BorderSide(color: primaryColor)
+                  ),
+                  child: Icon(Icons.my_location, color: primaryColor),
+                  onPressed: () {
+                    if (_hasFix) _mapController.move(_myLocation, 17);
+                  }
+              )
+          ),
         ],
       ),
     );

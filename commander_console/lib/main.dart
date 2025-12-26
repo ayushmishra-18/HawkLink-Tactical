@@ -123,6 +123,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   bool _showGrid = true;
   bool _showTrails = true;
   bool _showRangeRings = true;
+  bool _showTacticalMatrix = false; // New Feature State
   double _tilt = 0.0;
   double _rotation = 0.0;
   bool _isDrawingMode = false;
@@ -311,11 +312,17 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     if (input.startsWith('@')) {
       List<String> parts = input.split(' ');
       if (parts.isNotEmpty) {
-        String targetId = parts[0].substring(1).toUpperCase();
+        String rawTargetId = parts[0].substring(1); // "alpha-2"
+        String targetId = rawTargetId.toUpperCase().trim(); // "ALPHA-2"
         String content = parts.skip(1).join(' ');
 
+        // Debug logging to help identify why it fails
+        // _log("DEBUG", "Searching for unit: '$targetId'");
+
         try {
-          final u = _units.firstWhere((u) => u.id == targetId);
+          // Normalize both sides of the comparison
+          final u = _units.firstWhere((u) => u.id.toUpperCase().trim() == targetId);
+
           if (u.socket != null) {
             String p = _encrypter.encrypt(jsonEncode({
               'type': 'CHAT',
@@ -327,10 +334,12 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
             _log("CMD", "TO $targetId: $content");
             _playSfx('order.mp3');
           } else {
-            _log("CMD", "ERROR: $targetId OFFLINE");
+            _log("CMD", "ERROR: $targetId OFFLINE (NO SOCKET)");
           }
         } catch (e) {
-          _log("CMD", "ERROR: UNIT $targetId NOT FOUND");
+          // If not found, list available units to help debug
+          // String available = _units.map((u) => u.id).join(", ");
+          _log("CMD", "ERROR: UNIT '$targetId' NOT FOUND.");
         }
       }
     } else {
@@ -368,36 +377,27 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
 
   void _deployWaypoint(LatLng l, String t) { String id="${t}_${DateTime.now().millisecondsSinceEpoch}"; TacticalWaypoint w=TacticalWaypoint(id:id, type:t, location:l, created:DateTime.now()); setState(()=>_waypoints.add(w)); String p=_encrypter.encrypt(jsonEncode({'type':'WAYPOINT', 'action':'ADD', 'data':w.toJson()}), iv:_iv).base64; for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){} _log("CMD", "WAYPOINT DEPLOYED: $t"); _playSfx('order.mp3'); }
 
-  // --- UPDATED WAYPOINT REMOVAL LOGIC ---
   void _removeWaypointNear(LatLng tapLocation) {
     try {
-      // 1. Find the closest waypoint within 50 meters (reduced from 200m for precision)
-      // Sort by distance to find the absolute closest one
       _waypoints.sort((a, b) {
         double distA = const Distance().as(LengthUnit.Meter, a.location, tapLocation);
         double distB = const Distance().as(LengthUnit.Meter, b.location, tapLocation);
         return distA.compareTo(distB);
       });
 
-      // Check if the closest one is within range
       final closest = _waypoints.first;
       double distance = const Distance().as(LengthUnit.Meter, closest.location, tapLocation);
 
-      if (distance < 50) { // Precision threshold
+      if (distance < 50) {
         setState(() => _waypoints.remove(closest));
-
-        // Notify Units
         String p = _encrypter.encrypt(jsonEncode({'type': 'WAYPOINT', 'action': 'REMOVE', 'id': closest.id}), iv: _iv).base64;
         for (var u in _units) try { u.socket?.add(utf8.encode("$p\n")); } catch (e) {}
-
         _log("CMD", "REMOVED WAYPOINT: ${closest.type}");
         _playSfx('connect.mp3');
       } else {
         _log("CMD", "NO WAYPOINT FOUND NEAR TAP");
       }
-    } catch (e) {
-      // List was likely empty
-    }
+    } catch (e) {}
   }
 
   void _toggleDrawingMode() { setState(() { _isDrawingMode=!_isDrawingMode; _tempDrawPoints=[]; }); }
@@ -415,6 +415,43 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
 
   List<LatLng> _createVisionCone(LatLng c, double h) { double r=0.0005; double a=h*(math.pi/180); double w=45*(math.pi/180); return [c, LatLng(c.latitude+r*math.cos(a-w/2), c.longitude+r*math.sin(a-w/2)), LatLng(c.latitude+r*math.cos(a), c.longitude+r*math.sin(a)), LatLng(c.latitude+r*math.cos(a+w/2), c.longitude+r*math.sin(a+w/2)), c]; }
   void _showImagePreview(String path) { showDialog(context: context, builder: (ctx) => Dialog(backgroundColor: Colors.transparent, child: Stack(alignment: Alignment.center, children: [Image.file(File(path)), Positioned(top: 10, right: 10, child: IconButton(icon: const Icon(Icons.close, color: Colors.white, size: 30), onPressed: () => Navigator.pop(ctx)))]))); }
+
+  // --- COORDINATE FORMATTER ---
+  String _formatCoord(double val, bool isLat) {
+    String d = isLat ? (val >= 0 ? "N" : "S") : (val >= 0 ? "E" : "W");
+    return "${val.abs().toStringAsFixed(5)}° $d";
+  }
+
+  // --- RECENTER MAP LOGIC ---
+  void _recenterMap() {
+    if (_units.isEmpty) return;
+
+    LatLng target;
+    double zoom = 15.0; // Default tactical zoom
+
+    if (_selectedUnitId != null) {
+      try {
+        // Center on the selected soldier
+        target = _units.firstWhere((u) => u.id == _selectedUnitId).location;
+        zoom = 17.0; // Zoom in for detail
+      } catch (e) {
+        // Fallback if unit suddenly disappeared
+        target = _units.first.location;
+      }
+    } else {
+      // Geometric Center of the Squad
+      double latSum = 0;
+      double lngSum = 0;
+      for (var u in _units) {
+        latSum += u.location.latitude;
+        lngSum += u.location.longitude;
+      }
+      target = LatLng(latSum / _units.length, lngSum / _units.length);
+    }
+
+    _mapController.move(target, zoom);
+    _playSfx('connect.mp3');
+  }
 
   Widget _buildSignalBars(int seconds) {
     int bars = 4;
@@ -456,7 +493,6 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                           final u = _units[i];
                           bool isSelected = u.id == _selectedUnitId;
 
-                          // NEW STATE LOGIC
                           bool isCritical = u.status == "SOS" || u.bpm > 140;
                           bool isLost = u.status == "LOST";
                           bool isKilled = u.status == "KILLED";
@@ -553,8 +589,47 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                                           Text("${u.battery}%", style: TextStyle(color: Colors.grey, fontSize: 8)),
                                         ]),
 
+                                        // --- NEW: UNIT DETAIL OVERLAYS (WGS84 & WAYPOINTS) ---
                                         if(isSelected && !isKilled) ...[
                                           const Divider(color: Colors.white10),
+
+                                          // FEATURE 1: WGS 84 Display
+                                          Container(
+                                            margin: const EdgeInsets.symmetric(vertical: 4),
+                                            padding: const EdgeInsets.all(4),
+                                            decoration: BoxDecoration(color: Colors.black26, border: Border.all(color: Colors.white10)),
+                                            child: Column(
+                                              children: [
+                                                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                                                  Text("LAT: ${_formatCoord(u.location.latitude, true)}", style: const TextStyle(color: kSciFiCyan, fontSize: 10, fontFamily: 'Courier New')),
+                                                  Text("LNG: ${_formatCoord(u.location.longitude, false)}", style: const TextStyle(color: kSciFiCyan, fontSize: 10, fontFamily: 'Courier New')),
+                                                ]),
+                                              ],
+                                            ),
+                                          ),
+
+                                          // FEATURE 2: Distance to Waypoints (Sidebar List)
+                                          if (_waypoints.isNotEmpty) ...[
+                                            const SizedBox(height: 4),
+                                            const Text("WAYPOINT PROXIMITY", style: TextStyle(color: Colors.grey, fontSize: 8, letterSpacing: 1)),
+                                            ..._waypoints.map((wp) {
+                                              double dist = const Distance().as(LengthUnit.Meter, u.location, wp.location);
+                                              return Padding(
+                                                padding: const EdgeInsets.symmetric(vertical: 2.0),
+                                                child: Row(
+                                                  children: [
+                                                    Icon(_getWaypointIcon(wp.type), size: 10, color: _getWaypointColor(wp.type)),
+                                                    const SizedBox(width: 4),
+                                                    Text(wp.type, style: const TextStyle(color: Colors.white70, fontSize: 10)),
+                                                    const Spacer(),
+                                                    Text("${dist.toStringAsFixed(0)}m", style: const TextStyle(color: kSciFiGreen, fontFamily: 'Courier New', fontSize: 10, fontWeight: FontWeight.bold)),
+                                                  ],
+                                                ),
+                                              );
+                                            }).toList(),
+                                            const SizedBox(height: 8),
+                                          ],
+
                                           SizedBox(
                                             width: double.infinity,
                                             height: 30,
@@ -625,6 +700,53 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                           if (_showTrails) PolylineLayer(polylines: _units.map((u) => Polyline(points: u.pathHistory, strokeWidth: 2.0, color: u.status=="SOS" ? kSciFiRed : kSciFiGreen, isDotted: true)).toList()),
                           PolygonLayer(polygons: _units.map((u) => Polygon(points: _createVisionCone(u.location, u.heading), color: kSciFiCyan.withOpacity(0.15), isFilled: true, borderStrokeWidth: 0)).toList()),
                           if (_selectedUnitId != null && _showRangeRings) CircleLayer(circles: [CircleMarker(point: _units.firstWhere((u) => u.id == _selectedUnitId).location, radius: 50, color: Colors.transparent, borderColor: kSciFiCyan.withOpacity(0.5), borderStrokeWidth: 1, useRadiusInMeter: true)]),
+
+                          // --- NEW: TACTICAL MEASUREMENTS OVERLAY (VISUAL DISTANCE) ---
+                          if (_selectedUnitId != null && _waypoints.isNotEmpty) ...[
+                            PolylineLayer(
+                              polylines: _waypoints.map((wp) {
+                                try {
+                                  final unit = _units.firstWhere((u) => u.id == _selectedUnitId);
+                                  return Polyline(
+                                    points: [unit.location, wp.location],
+                                    strokeWidth: 1.0,
+                                    color: kSciFiCyan.withOpacity(0.5),
+                                    isDotted: true,
+                                  );
+                                } catch (e) { return Polyline(points: []); }
+                              }).toList(),
+                            ),
+                            MarkerLayer(
+                              markers: _waypoints.map((wp) {
+                                try {
+                                  final unit = _units.firstWhere((u) => u.id == _selectedUnitId);
+                                  final dist = const Distance().as(LengthUnit.Meter, unit.location, wp.location);
+                                  final midPoint = LatLng(
+                                    (unit.location.latitude + wp.location.latitude) / 2,
+                                    (unit.location.longitude + wp.location.longitude) / 2,
+                                  );
+                                  return Marker(
+                                    point: midPoint,
+                                    width: 80,
+                                    height: 30,
+                                    child: Container(
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                          color: Colors.black.withOpacity(0.7),
+                                          borderRadius: BorderRadius.circular(4),
+                                          border: Border.all(color: kSciFiCyan.withOpacity(0.5))
+                                      ),
+                                      child: Text(
+                                        "${dist.toStringAsFixed(0)}m",
+                                        style: const TextStyle(color: kSciFiCyan, fontSize: 10, fontWeight: FontWeight.bold),
+                                      ),
+                                    ),
+                                  );
+                                } catch (e) { return Marker(point: const LatLng(0,0), child: const SizedBox()); }
+                              }).toList(),
+                            ),
+                          ],
+
                           MarkerLayer(markers: _waypoints.map((wp) => Marker(point: wp.location, width: 50, height: 50, child: Column(children: [Icon(_getWaypointIcon(wp.type), color: _getWaypointColor(wp.type), size: 30), Container(padding: const EdgeInsets.symmetric(horizontal: 4), color: Colors.black54, child: Text(wp.type, style: const TextStyle(fontSize: 9, color: Colors.white, fontWeight: FontWeight.bold)))]) )).toList()),
                           MarkerLayer(markers: _units.map((u) {
                             bool isSelected = u.id == _selectedUnitId;
@@ -652,6 +774,73 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                         ],
                       ),
                     ),
+
+                    // --- UPDATED TACTICAL ANALYSIS PANEL (NO TABS) ---
+                    if (_showTacticalMatrix)
+                      Positioned.fill(
+                        child: Container(
+                          color: Colors.black.withOpacity(0.85),
+                          child: Center(
+                            child: SciFiPanel(
+                              width: 700,
+                              height: 500,
+                              title: "TACTICAL DISTANCE MATRIX",
+                              borderColor: kSciFiCyan,
+                              showBg: true,
+                              child: Column(
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.all(8.0),
+                                    child: const Text("UNIT TO OBJECTIVE DISTANCES", style: TextStyle(color: kSciFiGreen, letterSpacing: 2, fontSize: 10)),
+                                  ),
+                                  Expanded(
+                                    child: _waypoints.isEmpty
+                                        ? const Center(child: Text("NO ACTIVE WAYPOINTS", style: TextStyle(color: Colors.grey)))
+                                        : SingleChildScrollView(
+                                      scrollDirection: Axis.vertical,
+                                      child: SingleChildScrollView(
+                                        scrollDirection: Axis.horizontal,
+                                        child: DataTable(
+                                          headingRowColor: MaterialStateProperty.all(kSciFiDarkBlue),
+                                          dataRowColor: MaterialStateProperty.all(Colors.transparent),
+                                          columns: [
+                                            const DataColumn(label: Text("UNIT", style: TextStyle(color: kSciFiCyan, fontWeight: FontWeight.bold))),
+                                            ..._waypoints.map((wp) => DataColumn(
+                                                label: Column(
+                                                  mainAxisAlignment: MainAxisAlignment.center,
+                                                  children: [
+                                                    Icon(_getWaypointIcon(wp.type), color: _getWaypointColor(wp.type), size: 14),
+                                                    Text(wp.type, style: const TextStyle(color: Colors.white, fontSize: 10)),
+                                                  ],
+                                                )
+                                            )),
+                                          ],
+                                          rows: _units.map((u) {
+                                            return DataRow(cells: [
+                                              DataCell(Text(u.id, style: const TextStyle(color: kSciFiCyan, fontWeight: FontWeight.bold))),
+                                              ..._waypoints.map((wp) {
+                                                double dist = const Distance().as(LengthUnit.Meter, u.location, wp.location);
+                                                Color c = Colors.white;
+                                                if (dist < 50) c = kSciFiGreen;
+                                                return DataCell(Text("${dist.toStringAsFixed(0)}m", style: TextStyle(color: c, fontFamily: 'Courier New')));
+                                              })
+                                            ]);
+                                          }).toList(),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  Padding(
+                                    padding: const EdgeInsets.all(8.0),
+                                    child: SciFiButton(label: "CLOSE ANALYSIS", icon: Icons.close, color: kSciFiRed, onTap: () => setState(() => _showTacticalMatrix = false)),
+                                  )
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+
                     Positioned(
                       top: 20, right: 20,
                       child: ConstrainedBox(
@@ -666,6 +855,10 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                               SciFiButton(label: "G", icon: Icons.grid_4x4, color: _showGrid ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _showGrid = !_showGrid)), const SizedBox(height: 8),
                               SciFiButton(label: "R", icon: Icons.radar, color: _showRangeRings ? kSciFiCyan : Colors.grey, onTap: () => setState(() => _showRangeRings = !_showRangeRings)), const SizedBox(height: 8),
                               SciFiButton(label: "T", icon: Icons.timeline, color: _showTrails ? kSciFiCyan : Colors.grey, onTap: () => setState(() => _showTrails = !_showTrails)), const SizedBox(height: 8),
+
+                              // Feature 3 Trigger Button
+                              SciFiButton(label: "A", icon: Icons.straighten, color: _showTacticalMatrix ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _showTacticalMatrix = !_showTacticalMatrix)), const SizedBox(height: 8),
+
                               SciFiButton(label: "3D", icon: Icons.threed_rotation, color: _tilt > 0 ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _tilt = _tilt > 0 ? 0.0 : 0.6)), const SizedBox(height: 8),
                               SciFiButton(label: "<", icon: Icons.rotate_left, color: Colors.white, onTap: () { setState(() => _rotation -= 45); _mapController.rotate(_rotation); }), const SizedBox(height: 8),
                               SciFiButton(label: ">", icon: Icons.rotate_right, color: Colors.white, onTap: () { setState(() => _rotation += 45); _mapController.rotate(_rotation); }), const SizedBox(height: 10)
@@ -674,6 +867,23 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                         ),
                       ),
                     ),
+
+                    // --- RECENTER BUTTON ---
+                    if (!_isDrawingMode)
+                      Positioned(
+                        bottom: 100,
+                        right: 20,
+                        child: SciFiPanel(
+                          showBg: true,
+                          borderColor: kSciFiCyan,
+                          child: IconButton(
+                            icon: const Icon(Icons.center_focus_strong, color: kSciFiCyan),
+                            onPressed: _recenterMap,
+                            tooltip: "RECENTER",
+                          ),
+                        ),
+                      ),
+
                     if (!_isDrawingMode) Positioned(bottom: 30, left: 20, right: 20, child: Center(child: SciFiPanel(showBg: true, borderColor: kSciFiGreen.withOpacity(0.5), child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8.0), child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(mainAxisSize: MainAxisSize.min, mainAxisAlignment: MainAxisAlignment.center, children: [SciFiButton(label: "RALLY", icon: Icons.flag, color: Colors.blue, onTap: () => setState(() => _placingWaypointType = "RALLY")), const SizedBox(width: 8), SciFiButton(label: "ENEMY", icon: Icons.warning, color: kSciFiRed, onTap: () => setState(() => _placingWaypointType = "ENEMY")), const SizedBox(width: 8), SciFiButton(label: "MED", icon: Icons.medical_services, color: Colors.white, onTap: () => setState(() => _placingWaypointType = "MED")), const SizedBox(width: 8), SciFiButton(label: "LZ", icon: Icons.flight_land, color: kSciFiGreen, onTap: () => setState(() => _placingWaypointType = "LZ")), const SizedBox(width: 20), SciFiButton(label: "DEL", icon: Icons.delete, color: _isDeleteWaypointMode ? Colors.red : Colors.orange, onTap: () => setState(() => _isDeleteWaypointMode = !_isDeleteWaypointMode))])))))),
                     if (_isDeleteWaypointMode) Positioned(top: 80, left: 0, right: 0, child: Center(child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8), decoration: BoxDecoration(color: Colors.black87, border: Border.all(color: Colors.red)), child: const Text("TAP WAYPOINT TO DELETE", style: TextStyle(color: Colors.red, fontFamily: 'Orbitron', fontWeight: FontWeight.bold))))),
                     if (_isDrawingMode) Positioned(top: 20, left: 0, right: 0, child: Center(child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8), decoration: BoxDecoration(color: Colors.black87, border: Border.all(color: Colors.orange)), child: const Text("DRAWING MODE: TAP POINTS", style: TextStyle(color: Colors.orange, fontFamily: 'Orbitron'))))),
