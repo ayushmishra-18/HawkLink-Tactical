@@ -123,7 +123,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   bool _showGrid = true;
   bool _showTrails = true;
   bool _showRangeRings = true;
-  bool _showTacticalMatrix = false; // New Feature State
+  bool _showTacticalMatrix = false;
   double _tilt = 0.0;
   double _rotation = 0.0;
   bool _isDrawingMode = false;
@@ -131,6 +131,20 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   bool _isDeleteWaypointMode = false;
   List<LatLng> _tempDrawPoints = [];
   List<LatLng> _activeDangerZone = [];
+
+  // --- UPDATED: CONTINUOUS MEASURE TOOL STATE ---
+  bool _isMeasureMode = false;
+  List<LatLng> _measurePoints = []; // Stores the path
+
+  // Helper to calculate total distance of the path
+  double _getTotalMeasureDistance() {
+    double total = 0.0;
+    const Distance dist = Distance();
+    for (int i = 0; i < _measurePoints.length - 1; i++) {
+      total += dist.as(LengthUnit.Meter, _measurePoints[i], _measurePoints[i+1]);
+    }
+    return total;
+  }
 
   @override
   void initState() {
@@ -316,13 +330,8 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
         String targetId = rawTargetId.toUpperCase().trim(); // "ALPHA-2"
         String content = parts.skip(1).join(' ');
 
-        // Debug logging to help identify why it fails
-        // _log("DEBUG", "Searching for unit: '$targetId'");
-
         try {
-          // Normalize both sides of the comparison
           final u = _units.firstWhere((u) => u.id.toUpperCase().trim() == targetId);
-
           if (u.socket != null) {
             String p = _encrypter.encrypt(jsonEncode({
               'type': 'CHAT',
@@ -337,8 +346,6 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
             _log("CMD", "ERROR: $targetId OFFLINE (NO SOCKET)");
           }
         } catch (e) {
-          // If not found, list available units to help debug
-          // String available = _units.map((u) => u.id).join(", ");
           _log("CMD", "ERROR: UNIT '$targetId' NOT FOUND.");
         }
       }
@@ -355,9 +362,18 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     _playSfx('order.mp3');
   }
 
-  void _issueMoveOrder(LatLng d) { if(_isDrawingMode||_placingWaypointType!=null||_isDeleteWaypointMode||_selectedUnitId==null) return; try{ final u=_units.firstWhere((x)=>x.id==_selectedUnitId); String p=_encrypter.encrypt(jsonEncode({'type':'MOVE_TO', 'sender':'COMMAND', 'content':"MOVE TO ${d.latitude.toStringAsFixed(4)}, ${d.longitude.toStringAsFixed(4)}", 'lat':d.latitude, 'lng':d.longitude}), iv:_iv).base64; u.socket?.add(utf8.encode("$p\n")); _log("CMD", "VECTOR ASSIGNED: $u.id"); _playSfx('order.mp3'); }catch(e){} }
+  void _issueMoveOrder(LatLng d) { if(_isDrawingMode||_placingWaypointType!=null||_isDeleteWaypointMode||_selectedUnitId==null||_isMeasureMode) return; try{ final u=_units.firstWhere((x)=>x.id==_selectedUnitId); String p=_encrypter.encrypt(jsonEncode({'type':'MOVE_TO', 'sender':'COMMAND', 'content':"MOVE TO ${d.latitude.toStringAsFixed(4)}, ${d.longitude.toStringAsFixed(4)}", 'lat':d.latitude, 'lng':d.longitude}), iv:_iv).base64; u.socket?.add(utf8.encode("$p\n")); _log("CMD", "VECTOR ASSIGNED: $u.id"); _playSfx('order.mp3'); }catch(e){} }
 
   void _onMapTap(TapPosition p, LatLng l) {
+    // --- UPDATED MEASURE TOOL LOGIC: CONTINUOUS PATH ---
+    if (_isMeasureMode) {
+      setState(() {
+        _measurePoints.add(l);
+      });
+      _playSfx('connect.mp3'); // Feedback sound
+      return;
+    }
+
     if(_isDeleteWaypointMode){
       _removeWaypointNear(l);
       setState(()=>_isDeleteWaypointMode=false); // Auto-exit delete mode after one attempt
@@ -373,6 +389,30 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
       return;
     }
     setState(()=>_selectedUnitId=null);
+  }
+
+  // --- NEW: TOGGLE MEASURE MODE ---
+  void _toggleMeasureMode() {
+    setState(() {
+      if (_isMeasureMode) {
+        // Turning OFF: Clear the path
+        _measurePoints.clear();
+        _isMeasureMode = false;
+      } else {
+        // Turning ON
+        _isMeasureMode = true;
+        _measurePoints.clear();
+        // Disable other modes
+        _isDrawingMode = false;
+        _placingWaypointType = null;
+        _isDeleteWaypointMode = false;
+      }
+    });
+  }
+
+  // --- NEW: CLEAR MEASUREMENTS MANUALLY ---
+  void _clearMeasurements() {
+    setState(() => _measurePoints.clear());
   }
 
   void _deployWaypoint(LatLng l, String t) { String id="${t}_${DateTime.now().millisecondsSinceEpoch}"; TacticalWaypoint w=TacticalWaypoint(id:id, type:t, location:l, created:DateTime.now()); setState(()=>_waypoints.add(w)); String p=_encrypter.encrypt(jsonEncode({'type':'WAYPOINT', 'action':'ADD', 'data':w.toJson()}), iv:_iv).base64; for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){} _log("CMD", "WAYPOINT DEPLOYED: $t"); _playSfx('order.mp3'); }
@@ -701,7 +741,48 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                           PolygonLayer(polygons: _units.map((u) => Polygon(points: _createVisionCone(u.location, u.heading), color: kSciFiCyan.withOpacity(0.15), isFilled: true, borderStrokeWidth: 0)).toList()),
                           if (_selectedUnitId != null && _showRangeRings) CircleLayer(circles: [CircleMarker(point: _units.firstWhere((u) => u.id == _selectedUnitId).location, radius: 50, color: Colors.transparent, borderColor: kSciFiCyan.withOpacity(0.5), borderStrokeWidth: 1, useRadiusInMeter: true)]),
 
-                          // --- NEW: TACTICAL MEASUREMENTS OVERLAY (VISUAL DISTANCE) ---
+                          // --- UPDATED: CONTINUOUS MEASURE TOOL OVERLAY ---
+                          if (_measurePoints.isNotEmpty) ...[
+                            // Draw markers for all measured points
+                            MarkerLayer(markers: _measurePoints.map((p) =>
+                                Marker(point: p, width: 20, height: 20, child: Icon(Icons.circle, size: 10, color: Colors.purpleAccent))
+                            ).toList()),
+
+                            // Draw connecting dashed line
+                            if (_measurePoints.length > 1)
+                              PolylineLayer(polylines: [
+                                Polyline(points: _measurePoints, color: Colors.purpleAccent, strokeWidth: 2.0, isDotted: true)
+                              ]),
+
+                            // Draw total distance label at the last point
+                            if (_measurePoints.length > 1)
+                              MarkerLayer(markers: [
+                                Marker(
+                                  point: _measurePoints.last,
+                                  width: 80, height: 60, // Reduced marker width significantly
+                                  // Adjusted alignment to push label down
+                                  alignment: Alignment.bottomCenter,
+                                  child: Container(
+                                    margin: const EdgeInsets.only(top: 20), // Push down below point
+                                    padding: EdgeInsets.symmetric(horizontal: 2, vertical: 1), // Even smaller padding
+                                    decoration: BoxDecoration(color: Colors.black.withOpacity(0.8), borderRadius: BorderRadius.circular(2), border: Border.all(color: Colors.purpleAccent, width: 0.5)),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Text(
+                                          "DIST: ${_getTotalMeasureDistance().toStringAsFixed(0)}m",
+                                          style: const TextStyle(color: Colors.purpleAccent, fontWeight: FontWeight.bold, fontSize: 8), // Reduced font size further
+                                        ),
+                                        const Text("(TAP)", style: TextStyle(color: Colors.white54, fontSize: 6)) // Reduced font size further
+                                      ],
+                                    ),
+                                  ),
+                                )
+                              ])
+                          ],
+
+                          // --- TACTICAL MEASUREMENTS OVERLAY (VISUAL DISTANCE) ---
                           if (_selectedUnitId != null && _waypoints.isNotEmpty) ...[
                             PolylineLayer(
                               polylines: _waypoints.map((wp) {
@@ -859,6 +940,14 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                               // Feature 3 Trigger Button
                               SciFiButton(label: "A", icon: Icons.straighten, color: _showTacticalMatrix ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _showTacticalMatrix = !_showTacticalMatrix)), const SizedBox(height: 8),
 
+                              // --- UPDATED: MEASURE TOOL BUTTON (Ruler Icon) ---
+                              // Only show Clear button if we have points, otherwise toggle
+                              if (_measurePoints.isNotEmpty && _isMeasureMode)
+                                SciFiButton(label: "CLR", icon: Icons.clear_all, color: Colors.red, onTap: _clearMeasurements)
+                              else
+                                SciFiButton(label: "M", icon: Icons.square_foot, color: _isMeasureMode ? Colors.purpleAccent : Colors.grey, onTap: _toggleMeasureMode),
+                              const SizedBox(height: 8),
+
                               SciFiButton(label: "3D", icon: Icons.threed_rotation, color: _tilt > 0 ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _tilt = _tilt > 0 ? 0.0 : 0.6)), const SizedBox(height: 8),
                               SciFiButton(label: "<", icon: Icons.rotate_left, color: Colors.white, onTap: () { setState(() => _rotation -= 45); _mapController.rotate(_rotation); }), const SizedBox(height: 8),
                               SciFiButton(label: ">", icon: Icons.rotate_right, color: Colors.white, onTap: () { setState(() => _rotation += 45); _mapController.rotate(_rotation); }), const SizedBox(height: 10)
@@ -867,6 +956,24 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                         ),
                       ),
                     ),
+
+                    // --- MEASURE TOOL HINT ---
+                    if (_isMeasureMode)
+                      Positioned(
+                          top: 20,
+                          left: 0,
+                          right: 0,
+                          child: Center(
+                              child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                                  decoration: BoxDecoration(color: Colors.black87, border: Border.all(color: Colors.purpleAccent)),
+                                  child: Text(
+                                      _measurePoints.isEmpty ? "TAP START POINT" : "TAP TO ADD POINT",
+                                      style: const TextStyle(color: Colors.purpleAccent, fontFamily: 'Orbitron', fontWeight: FontWeight.bold)
+                                  )
+                              )
+                          )
+                      ),
 
                     // --- RECENTER BUTTON ---
                     if (!_isDrawingMode)

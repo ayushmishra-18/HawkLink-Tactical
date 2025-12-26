@@ -17,10 +17,10 @@ import 'package:image_picker/image_picker.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:http/http.dart' as http;
 import 'sci_fi_ui.dart';
-import 'heart_rate_scanner.dart';
+import 'heart_rate_scanner.dart'; // NOW USES REAL SCANNER
 import 'ar_compass.dart';
 import 'acoustic_sensor.dart';
-import 'models.dart'; // IMPORT SHARED MODELS
+import 'models.dart';
 
 // --- CONFIGURATION ---
 const int kPort = 4444;
@@ -81,9 +81,9 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   LatLng? _commanderObjective;
   List<TacticalWaypoint> _waypoints = [];
 
-  // --- BIO METRICS ---
-  int _heartRate = 75;
-  int _spO2 = 98;
+  // --- BIO METRICS (DEFAULTS) ---
+  int _heartRate = 0; // 0 indicates no reading yet
+  int _spO2 = 98;     // Default baseline
   int _systolic = 120;
   int _diastolic = 80;
   String get _bp => "$_systolic/$_diastolic";
@@ -130,33 +130,27 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     _initTts();
     _initAcousticSensor();
 
-    // BIO-SIMULATION LOOP
+    // BIO-MONITORING LOOP (FATIGUE CALCULATION ONLY)
+    // Removed random simulation. Now relies on sensors.
     _biometricTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
         setState(() {
-          // --- SIMULATION (COMMENT OUT FOR REAL USE) ---
-          int base = _sosController.isAnimating ? 130 : 75;
-          if (Random().nextInt(20) == 0) base = 160;
-          _heartRate = base + Random().nextInt(10) - 5;
-          _spO2 = 96 + Random().nextInt(4);
-          _systolic = 115 + Random().nextInt(10);
-          _diastolic = 75 + Random().nextInt(10);
-          _temp = 98.0 + Random().nextDouble();
-          // ---------------------------------------------
+          // Only calculate stress if we have valid sensor data (>0)
+          if (_heartRate > 0) {
+            // Fatigue Logic
+            if (_heartRate > kHighBpmThreshold) {
+              _fatigueAccumulator++;
+            } else {
+              if (_fatigueAccumulator > 0) _fatigueAccumulator--;
+            }
 
-          // Fatigue Logic
-          if (_heartRate > kHighBpmThreshold) {
-            _fatigueAccumulator++;
-          } else {
-            if (_fatigueAccumulator > 0) _fatigueAccumulator--;
-          }
-
-          if (_fatigueAccumulator >= kFatigueThresholdSeconds && !_isHeatStress) {
-            _isHeatStress = true;
-            if (!widget.isStealth) _tts.speak("Warning. Heat Stress Detected.");
-            _sendPacket({'type': 'HEAT_STRESS', 'sender': _idController.text.toUpperCase(), 'val': true});
-          } else if (_fatigueAccumulator == 0 && _isHeatStress) {
-            _isHeatStress = false;
+            if (_fatigueAccumulator >= kFatigueThresholdSeconds && !_isHeatStress) {
+              _isHeatStress = true;
+              if (!widget.isStealth) _tts.speak("Warning. Heat Stress Detected.");
+              _sendPacket({'type': 'HEAT_STRESS', 'sender': _idController.text.toUpperCase(), 'val': true});
+            } else if (_fatigueAccumulator == 0 && _isHeatStress) {
+              _isHeatStress = false;
+            }
           }
         });
       }
@@ -203,13 +197,15 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     });
   }
 
+  // --- UPDATED BIO SCANNER INTEGRATION ---
   void _openBioScanner() {
-    setState(() { _isBioActive = true; _bioStatus = "BIO-SCANNER ACTIVE"; });
+    setState(() { _isBioActive = true; _bioStatus = "INITIALIZING SENSORS..."; });
     showDialog(
         context: context,
         barrierDismissible: false,
         builder: (ctx) => HeartRateScanner(
             onReadingsDetected: (bpm, spo2, sys, dia) {
+              // Updates state in real-time as scanner runs
               setState(() {
                 _heartRate = bpm;
                 _spO2 = spo2;
@@ -219,7 +215,15 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
             }
         )
     ).then((_) {
-      setState(() => _bioStatus = "LAST: $_heartRate BPM | $_spO2% | ${_temp.toStringAsFixed(1)}°F");
+      // When scanner closes, update status text
+      setState(() {
+        _isBioActive = false;
+        if (_heartRate > 0) {
+          _bioStatus = "VITAL: $_heartRate BPM | $_spO2% SpO2";
+        } else {
+          _bioStatus = "SCAN ABORTED";
+        }
+      });
     });
   }
 
@@ -281,7 +285,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
           _myLocation = LatLng(position.latitude, position.longitude);
           _hasFix = true;
 
-          if (_temp == 0.0) _fetchRealWeather();
+          if (_temp == 98.6) _fetchRealWeather(); // Try to fetch weather if stuck on default
         });
 
         if (_dangerZone.isNotEmpty) {
@@ -713,7 +717,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
             ),
           ),
 
-          // --- RECENTER BUTTON (MOVED TO BOTTOM RIGHT) ---
+          // --- RECENTER BUTTON (BOTTOM RIGHT) ---
           Positioned(
               bottom: 240,
               right: 16,
