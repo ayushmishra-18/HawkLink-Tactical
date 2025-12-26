@@ -13,6 +13,7 @@ import 'package:intl/intl.dart';
 import 'package:encrypt/encrypt.dart' as enc;
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:qr_flutter/qr_flutter.dart'; // ENSURE THIS PACKAGE IS IN pubspec.yaml
 import 'sci_fi_ui.dart';
 
 // --- CONFIGURATION ---
@@ -39,6 +40,7 @@ class SoldierUnit {
   // NEW FIELDS
   bool isHeatStress;
   bool isDeadReckoning;
+  bool inDangerZone;
 
   DateTime lastSeen;
   Socket? socket;
@@ -59,6 +61,7 @@ class SoldierUnit {
     this.status="IDLE",
     this.isHeatStress = false,
     this.isDeadReckoning = false,
+    this.inDangerZone = false,
     required this.lastSeen,
     this.socket,
     List<LatLng>? history
@@ -132,9 +135,9 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   List<LatLng> _tempDrawPoints = [];
   List<LatLng> _activeDangerZone = [];
 
-  // --- UPDATED: CONTINUOUS MEASURE TOOL STATE ---
+  // --- MEASURE TOOL STATE ---
   bool _isMeasureMode = false;
-  List<LatLng> _measurePoints = []; // Stores the path
+  List<LatLng> _measurePoints = [];
 
   // Helper to calculate total distance of the path
   double _getTotalMeasureDistance() {
@@ -187,6 +190,104 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
       if (silence > 0) needsRebuild = true;
     }
     if (needsRebuild) setState(() {});
+  }
+
+  void _checkGeofences(SoldierUnit u) {
+    if (_activeDangerZone.length < 3) return;
+
+    bool isInside = _isPointInside(u.location, _activeDangerZone);
+
+    if (isInside && !u.inDangerZone) {
+      u.inDangerZone = true;
+      _log("TAC", "⚠️ ALERT: ${u.id} BREACHED DANGER ZONE");
+      _playAlert('alert.mp3');
+
+      if (u.socket != null) {
+        String p = _encrypter.encrypt(jsonEncode({
+          'type': 'BREACH',
+          'sender': 'COMMAND',
+          'content': '!!! YOU HAVE ENTERED A DANGER ZONE !!!'
+        }), iv: _iv).base64;
+        u.socket!.add(utf8.encode("$p\n"));
+      }
+    } else if (!isInside && u.inDangerZone) {
+      u.inDangerZone = false;
+      _log("TAC", "${u.id} EXITED DANGER ZONE");
+    }
+  }
+
+  bool _isPointInside(LatLng point, List<LatLng> polygon) {
+    int intersectCount = 0;
+    for (int j = 0; j < polygon.length - 1; j++) {
+      if (_rayCastIntersect(point, polygon[j], polygon[j + 1])) {
+        intersectCount++;
+      }
+    }
+    return (intersectCount % 2) == 1;
+  }
+
+  bool _rayCastIntersect(LatLng point, LatLng vertA, LatLng vertB) {
+    double aY = vertA.latitude;
+    double bY = vertB.latitude;
+    double aX = vertA.longitude;
+    double bX = vertB.longitude;
+    double pY = point.latitude;
+    double pX = point.longitude;
+
+    if ((aY > pY && bY > pY) || (aY < pY && bY < pY) || (aX < pX && bX < pX)) {
+      return false;
+    }
+
+    double m = (aY - bY) / (aX - bX);
+    double bee = (-aX) * m + aY;
+    double x = (pY - bee) / m;
+
+    return x > pX;
+  }
+
+  // --- UPDATED QR CODE QUICK JOIN DIALOG ---
+  void _showQuickJoinQR() {
+    if (_myIps.isEmpty) return;
+
+    String qrData = "${_myIps.first}|$kPreSharedKey";
+
+    showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: Colors.black87,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: const BorderSide(color: kSciFiCyan)),
+          title: const Text("QUICK JOIN // UPLINK", style: TextStyle(color: kSciFiCyan, fontFamily: 'Orbitron')),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // FIXED: Wrapped in SizedBox to constrain size and prevent intrinsic dimensions error
+              SizedBox(
+                width: 220,
+                height: 220,
+                child: Container(
+                  color: Colors.white,
+                  padding: const EdgeInsets.all(10),
+                  child: Center(
+                    child: QrImageView(
+                      data: qrData,
+                      version: QrVersions.auto,
+                      size: 200.0,
+                      backgroundColor: Colors.white,
+                      padding: EdgeInsets.zero,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              const Text("SCAN WITH SOLDIER APP", style: TextStyle(color: Colors.white70, fontSize: 12)),
+              Text("IP: ${_myIps.first}", style: const TextStyle(color: kSciFiGreen, fontSize: 10, fontFamily: 'Courier New')),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("CLOSE", style: TextStyle(color: kSciFiRed)))
+          ],
+        )
+    );
   }
 
   void _sendKillCommand(SoldierUnit u) {
@@ -276,7 +377,6 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     setState(() {
       final id=d['id']; final idx=_units.indexWhere((u)=>u.id==id); final loc=LatLng(d['lat'],d['lng']);
 
-      // PARSE NEW FLAGS
       bool isHeat = d['heat'] ?? false;
       bool isDr = d['dr'] ?? false;
 
@@ -295,9 +395,12 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
         u.isDeadReckoning = isDr;
         u.lastSeen=DateTime.now();
         u.socket=s;
+
+        _checkGeofences(u);
+
         if(u.pathHistory.isEmpty || const Distance().as(LengthUnit.Meter, u.pathHistory.last, loc)>5) u.pathHistory.add(loc);
       } else {
-        _units.add(SoldierUnit(
+        var newUnit = SoldierUnit(
             id:id,
             location:loc,
             role:d['role']??"ASSAULT",
@@ -312,7 +415,10 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
             lastSeen:DateTime.now(),
             socket:s,
             history:[loc]
-        ));
+        );
+        _checkGeofences(newUnit);
+
+        _units.add(newUnit);
         _log("NET", "UNIT REGISTERED: $id"); _playSfx('connect.mp3');
       }
     });
@@ -365,18 +471,17 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   void _issueMoveOrder(LatLng d) { if(_isDrawingMode||_placingWaypointType!=null||_isDeleteWaypointMode||_selectedUnitId==null||_isMeasureMode) return; try{ final u=_units.firstWhere((x)=>x.id==_selectedUnitId); String p=_encrypter.encrypt(jsonEncode({'type':'MOVE_TO', 'sender':'COMMAND', 'content':"MOVE TO ${d.latitude.toStringAsFixed(4)}, ${d.longitude.toStringAsFixed(4)}", 'lat':d.latitude, 'lng':d.longitude}), iv:_iv).base64; u.socket?.add(utf8.encode("$p\n")); _log("CMD", "VECTOR ASSIGNED: $u.id"); _playSfx('order.mp3'); }catch(e){} }
 
   void _onMapTap(TapPosition p, LatLng l) {
-    // --- UPDATED MEASURE TOOL LOGIC: CONTINUOUS PATH ---
     if (_isMeasureMode) {
       setState(() {
         _measurePoints.add(l);
       });
-      _playSfx('connect.mp3'); // Feedback sound
+      _playSfx('connect.mp3');
       return;
     }
 
     if(_isDeleteWaypointMode){
       _removeWaypointNear(l);
-      setState(()=>_isDeleteWaypointMode=false); // Auto-exit delete mode after one attempt
+      setState(()=>_isDeleteWaypointMode=false);
       return;
     }
     if(_placingWaypointType!=null){
@@ -391,18 +496,14 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     setState(()=>_selectedUnitId=null);
   }
 
-  // --- NEW: TOGGLE MEASURE MODE ---
   void _toggleMeasureMode() {
     setState(() {
       if (_isMeasureMode) {
-        // Turning OFF: Clear the path
         _measurePoints.clear();
         _isMeasureMode = false;
       } else {
-        // Turning ON
         _isMeasureMode = true;
         _measurePoints.clear();
-        // Disable other modes
         _isDrawingMode = false;
         _placingWaypointType = null;
         _isDeleteWaypointMode = false;
@@ -410,7 +511,6 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     });
   }
 
-  // --- NEW: CLEAR MEASUREMENTS MANUALLY ---
   void _clearMeasurements() {
     setState(() => _measurePoints.clear());
   }
@@ -522,7 +622,17 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                 child: Column(
                   children: [
                     const SciFiHeader(label: "HAWKLINK // C2"),
-                    Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text("IP: ${_myIps.isNotEmpty ? _myIps.first : '...'}", style: const TextStyle(color: kSciFiGreen, fontSize: 10, fontFamily: 'Courier New')), const Text("SECURE: AES-256", style: TextStyle(color: kSciFiCyan, fontSize: 10, fontFamily: 'Courier New'))])),
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                      Text("IP: ${_myIps.isNotEmpty ? _myIps.first : '...'}", style: const TextStyle(color: kSciFiGreen, fontSize: 10, fontFamily: 'Courier New')),
+                      // --- QR CODE BUTTON ---
+                      IconButton(
+                        icon: const Icon(Icons.qr_code, color: kSciFiCyan, size: 20),
+                        tooltip: "Quick Join QR",
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: _showQuickJoinQR,
+                      )
+                    ])),
 
                     // --- BIO-TELEMETRY PLATFORM ---
                     Expanded(
@@ -538,11 +648,13 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                           bool isKilled = u.status == "KILLED";
                           bool isHeat = u.isHeatStress;
                           bool isDr = u.isDeadReckoning;
+                          // New Breach Flag
+                          bool isBreach = u.inDangerZone;
 
                           Color mainColor = kSciFiGreen;
                           if (isKilled) mainColor = Colors.red;
                           else if (isLost) mainColor = Colors.grey;
-                          else if (u.status == "SOS" || isHeat) mainColor = kSciFiRed;
+                          else if (u.status == "SOS" || isHeat || isBreach) mainColor = kSciFiRed;
                           else if (isDr) mainColor = Colors.amber;
 
                           if (isSelected) mainColor = kSciFiCyan;
@@ -551,7 +663,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                             animation: _pulseController,
                             builder: (context, child) {
                               Color displayColor = mainColor;
-                              if ((u.status == "SOS" || isHeat) && !isKilled && !isLost) {
+                              if ((u.status == "SOS" || isHeat || isBreach) && !isKilled && !isLost) {
                                 displayColor = Color.lerp(mainColor, mainColor.withOpacity(0.3), _pulseController.value)!;
                               }
 
@@ -573,11 +685,12 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                                           const SizedBox(width: 8),
 
                                           if(u.status=="SOS") BlinkingText("SOS", color: kSciFiRed)
+                                          else if(isBreach) BlinkingText("ZONE BREACH", color: kSciFiRed)
                                           else if(isHeat) BlinkingText("HEAT STRESS", color: kSciFiRed)
-                                          else if(isKilled) const Text("ZEROIZED", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 10))
-                                            else if(isLost) const Text("LOST", style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold, fontSize: 10))
-                                              else if(isDr) const Text("DR MODE", style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 10))
-                                                else Text("ACTIVE", style: TextStyle(color: mainColor, fontSize: 10))
+                                            else if(isKilled) const Text("ZEROIZED", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 10))
+                                              else if(isLost) const Text("LOST", style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold, fontSize: 10))
+                                                else if(isDr) const Text("DR MODE", style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 10))
+                                                  else Text("ACTIVE", style: TextStyle(color: mainColor, fontSize: 10))
                                         ]),
                                         const SizedBox(height: 8),
 
@@ -648,7 +761,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                                             ),
                                           ),
 
-                                          // FEATURE 2: Distance to Waypoints (Sidebar List)
+                                          // FEATURE 2: Distance to Waypoints
                                           if (_waypoints.isNotEmpty) ...[
                                             const SizedBox(height: 4),
                                             const Text("WAYPOINT PROXIMITY", style: TextStyle(color: Colors.grey, fontSize: 8, letterSpacing: 1)),
@@ -834,15 +947,17 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                             bool isLost = u.status == "LOST";
                             bool isDr = u.isDeadReckoning;
                             bool isHeat = u.isHeatStress;
+                            // Update icon color for Breach
+                            bool isBreach = u.inDangerZone;
 
                             Color iconColor = kSciFiCyan;
                             if (isLost) iconColor = Colors.grey;
-                            else if (u.status == "SOS" || isHeat) iconColor = kSciFiRed;
+                            else if (u.status == "SOS" || isHeat || isBreach) iconColor = kSciFiRed;
                             else if (isDr) iconColor = Colors.amber;
 
                             return Marker(point: u.location, width: 80, height: 80, child: Transform.rotate(angle: -_rotation * (math.pi / 180), child: Stack(alignment: Alignment.center, children: [
 
-                              if(u.status=="SOS" || isHeat) ScaleTransition(scale: _pulseController, child: Container(width: 60, height: 60, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: kSciFiRed, width: 2)))),
+                              if(u.status=="SOS" || isHeat || isBreach) ScaleTransition(scale: _pulseController, child: Container(width: 60, height: 60, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: kSciFiRed, width: 2)))),
                               if(isSelected) RotationTransition(turns: _pulseController, child: Container(width: 50, height: 50, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: kSciFiCyan, width: 2, style: BorderStyle.solid)))),
 
                               Column(mainAxisSize: MainAxisSize.min, children: [
@@ -856,7 +971,6 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                       ),
                     ),
 
-                    // --- UPDATED TACTICAL ANALYSIS PANEL (NO TABS) ---
                     if (_showTacticalMatrix)
                       Positioned.fill(
                         child: Container(
@@ -937,11 +1051,8 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                               SciFiButton(label: "R", icon: Icons.radar, color: _showRangeRings ? kSciFiCyan : Colors.grey, onTap: () => setState(() => _showRangeRings = !_showRangeRings)), const SizedBox(height: 8),
                               SciFiButton(label: "T", icon: Icons.timeline, color: _showTrails ? kSciFiCyan : Colors.grey, onTap: () => setState(() => _showTrails = !_showTrails)), const SizedBox(height: 8),
 
-                              // Feature 3 Trigger Button
                               SciFiButton(label: "A", icon: Icons.straighten, color: _showTacticalMatrix ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _showTacticalMatrix = !_showTacticalMatrix)), const SizedBox(height: 8),
 
-                              // --- UPDATED: MEASURE TOOL BUTTON (Ruler Icon) ---
-                              // Only show Clear button if we have points, otherwise toggle
                               if (_measurePoints.isNotEmpty && _isMeasureMode)
                                 SciFiButton(label: "CLR", icon: Icons.clear_all, color: Colors.red, onTap: _clearMeasurements)
                               else
@@ -957,7 +1068,6 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                       ),
                     ),
 
-                    // --- MEASURE TOOL HINT ---
                     if (_isMeasureMode)
                       Positioned(
                           top: 20,
@@ -975,7 +1085,6 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                           )
                       ),
 
-                    // --- RECENTER BUTTON ---
                     if (!_isDrawingMode)
                       Positioned(
                         bottom: 100,

@@ -16,8 +16,9 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:http/http.dart' as http;
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'sci_fi_ui.dart';
-import 'heart_rate_scanner.dart'; // NOW USES REAL SCANNER
+import 'heart_rate_scanner.dart';
 import 'ar_compass.dart';
 import 'acoustic_sensor.dart';
 import 'models.dart';
@@ -82,8 +83,8 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   List<TacticalWaypoint> _waypoints = [];
 
   // --- BIO METRICS (DEFAULTS) ---
-  int _heartRate = 0; // 0 indicates no reading yet
-  int _spO2 = 98;     // Default baseline
+  int _heartRate = 0;
+  int _spO2 = 98;
   int _systolic = 120;
   int _diastolic = 80;
   String get _bp => "$_systolic/$_diastolic";
@@ -121,6 +122,9 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   // Distance Calc
   final Distance _distanceCalc = const Distance();
 
+  // Mobile Scanner Controller
+  // MobileScannerController cameraController = MobileScannerController(); // Removed to avoid lifecycle issues
+
   @override
   void initState() {
     super.initState();
@@ -130,14 +134,10 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     _initTts();
     _initAcousticSensor();
 
-    // BIO-MONITORING LOOP (FATIGUE CALCULATION ONLY)
-    // Removed random simulation. Now relies on sensors.
     _biometricTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
         setState(() {
-          // Only calculate stress if we have valid sensor data (>0)
           if (_heartRate > 0) {
-            // Fatigue Logic
             if (_heartRate > kHighBpmThreshold) {
               _fatigueAccumulator++;
             } else {
@@ -197,7 +197,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     });
   }
 
-  // --- UPDATED BIO SCANNER INTEGRATION ---
   void _openBioScanner() {
     setState(() { _isBioActive = true; _bioStatus = "INITIALIZING SENSORS..."; });
     showDialog(
@@ -205,7 +204,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
         barrierDismissible: false,
         builder: (ctx) => HeartRateScanner(
             onReadingsDetected: (bpm, spo2, sys, dia) {
-              // Updates state in real-time as scanner runs
               setState(() {
                 _heartRate = bpm;
                 _spO2 = spo2;
@@ -215,7 +213,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
             }
         )
     ).then((_) {
-      // When scanner closes, update status text
       setState(() {
         _isBioActive = false;
         if (_heartRate > 0) {
@@ -249,6 +246,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     _weatherTimer?.cancel();
     _acousticSensor?.stop();
     _sosController.dispose();
+    // cameraController.dispose(); // Removed
     _tts.stop();
     super.dispose();
   }
@@ -285,17 +283,24 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
           _myLocation = LatLng(position.latitude, position.longitude);
           _hasFix = true;
 
-          if (_temp == 98.6) _fetchRealWeather(); // Try to fetch weather if stuck on default
+          if (_temp == 98.6) _fetchRealWeather();
         });
 
         if (_dangerZone.isNotEmpty) {
           bool currentlyInDanger = _isPointInside(_myLocation, _dangerZone);
-          if (currentlyInDanger && !_isInDanger && !widget.isStealth) _tts.speak("WARNING! Restricted Zone!");
+          if (currentlyInDanger && !_isInDanger && !widget.isStealth) {
+            _tts.speak("WARNING! Restricted Zone!");
+            _handleGeofenceBreach();
+          }
           _isInDanger = currentlyInDanger;
         }
         if (_hasFix && _mapController.camera.zoom < 5) _mapController.move(_myLocation, 17);
       }
     });
+  }
+
+  void _handleGeofenceBreach() {
+    _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': '!!! BREACHING DANGER ZONE !!!'});
   }
 
   void _startCompass() {
@@ -353,6 +358,11 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       List<dynamic> points = json['points'];
       setState(() => _dangerZone = points.map((p) => LatLng(p[0], p[1])).toList());
       if (!widget.isStealth) _tts.speak("Zone Updated");
+    }
+    else if (json['type'] == 'BREACH') {
+      _onMessageReceived(json);
+      setState(() => _isInDanger = true);
+      if(!widget.isStealth) _tts.speak("Alert! You are in a restricted area!");
     }
     else if (json['type'] == 'WAYPOINT') {
       if (json['action'] == 'ADD') {
@@ -438,7 +448,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
         'bp': _bp,
         'temp': _temp,
         'heat': _isHeatStress,
-        'dr': false // ALWAYS FALSE NOW
+        'dr': false
       });
     } catch (e) {}
   }
@@ -522,6 +532,44 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     String latDir = l.latitude >= 0 ? "N" : "S";
     String lngDir = l.longitude >= 0 ? "E" : "W";
     return "${l.latitude.abs().toStringAsFixed(5)}° $latDir\n${l.longitude.abs().toStringAsFixed(5)}° $lngDir";
+  }
+
+  // --- QR CODE SCANNER (QUICK JOIN) ---
+  void _openQRScanner() {
+    // Navigate to full-screen scanner
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => Scaffold(
+          appBar: AppBar(title: const Text("SCAN UPLINK QR"), backgroundColor: Colors.black),
+          body: MobileScanner(
+            // Removed controller declaration here to simplify state management
+            onDetect: (capture) {
+              final List<Barcode> barcodes = capture.barcodes;
+              for (final barcode in barcodes) {
+                if (barcode.rawValue != null) {
+                  // Expected Format: "IP|KEY" (e.g. "192.168.1.5|HAWKLINK...")
+                  final parts = barcode.rawValue!.split('|');
+                  if (parts.length >= 1) {
+                    if (context.mounted) {
+                      setState(() {
+                        _ipController.text = parts[0];
+                      });
+                      // Use root navigator to ensure we pop correctly
+                      Navigator.of(context).pop();
+
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("QR SCANNED: CONNECTING...")));
+                      // Delay connection slightly to allow UI to settle
+                      Future.delayed(Duration(milliseconds: 300), _connect);
+                    }
+                    return; // Stop after first valid scan
+                  }
+                }
+              }
+            },
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -615,7 +663,19 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
                           Expanded(flex: 2, child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 8), decoration: BoxDecoration(color: kSciFiDarkBlue, border: Border.all(color: primaryColor)), child: DropdownButtonFormField<String>(value: _selectedRole, dropdownColor: kSciFiBlack, decoration: const InputDecoration(border: InputBorder.none), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier'), items: _roles.map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(), onChanged: (v) => setState(() => _selectedRole = v!)))),
                         ]),
                         const SizedBox(height: 8),
-                        Row(children: [Expanded(child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 8), decoration: BoxDecoration(color: kSciFiDarkBlue, border: Border.all(color: primaryColor)), child: TextField(controller: _ipController, style: const TextStyle(color: Colors.white, fontFamily: 'Courier'), decoration: const InputDecoration(border: InputBorder.none, hintText: "COMMAND IP")))), const SizedBox(width: 8), SciFiButton(label: "LINK", icon: Icons.link, color: primaryColor, onTap: _connect)])
+                        // --- UPDATED ROW WITH QR SCANNER BUTTON ---
+                        Row(children: [
+                          Expanded(child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 8), decoration: BoxDecoration(color: kSciFiDarkBlue, border: Border.all(color: primaryColor)), child: TextField(controller: _ipController, style: const TextStyle(color: Colors.white, fontFamily: 'Courier'), decoration: const InputDecoration(border: InputBorder.none, hintText: "COMMAND IP")))),
+
+                          // QR SCAN BUTTON
+                          IconButton(
+                              icon: Icon(Icons.qr_code_scanner, color: kSciFiCyan),
+                              onPressed: _openQRScanner
+                          ),
+
+                          const SizedBox(width: 4),
+                          SciFiButton(label: "LINK", icon: Icons.link, color: primaryColor, onTap: _connect)
+                        ])
                       ]
                       else Padding(padding: const EdgeInsets.only(top: 8), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                         Text("ID: ${_idController.text.toUpperCase()}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier', fontSize: 14)),
