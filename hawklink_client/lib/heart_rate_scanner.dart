@@ -1,13 +1,14 @@
 import 'dart:async';
-import 'dart:math';
+import 'dart:math'; // Added for max/min functions
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'sci_fi_ui.dart';
+
+// --- CONFIG ---
+const int kWindowSize = 50; // Samples for moving average
 
 class HeartRateScanner extends StatefulWidget {
-  // Updated callback to return all 3 metrics
-  final Function(int bpm, int spo2, int systolic, int diastolic) onReadingsDetected;
+  final Function(int bpm, int spo2, int sys, int dia) onReadingsDetected;
+
   const HeartRateScanner({super.key, required this.onReadingsDetected});
 
   @override
@@ -16,23 +17,14 @@ class HeartRateScanner extends StatefulWidget {
 
 class _HeartRateScannerState extends State<HeartRateScanner> {
   CameraController? _controller;
-  bool _isScanning = false;
-  String _status = "INITIALIZING SENSORS...";
+  bool _isDetecting = false;
 
-  // PPG Processing Variables
-  final List<double> _redHistory = [];
-  final int _windowSize = 150;
-  DateTime? _startTime;
-  int _beatCount = 0;
-
-  // Live Readings
-  int _currentBpm = 0;
-  int _currentSpO2 = 0;
-  int _currentSys = 0;
-  int _currentDia = 0;
-
-  // Animation
-  double _graphHeight = 50.0;
+  // PPG Processing
+  final List<double> _redAvgHistory = [];
+  final List<int> _peakTimes = [];
+  int _bpm = 0;
+  double _progress = 0.0;
+  int _samples = 0;
 
   @override
   void initState() {
@@ -41,138 +33,129 @@ class _HeartRateScannerState extends State<HeartRateScanner> {
   }
 
   Future<void> _initCamera() async {
-    if (await Permission.camera.request().isDenied) {
-      setState(() => _status = "CAMERA ACCESS DENIED");
-      return;
-    }
+    final cameras = await availableCameras();
+    // Try to find the back camera
+    final backCam = cameras.firstWhere(
+          (c) => c.lensDirection == CameraLensDirection.back,
+      orElse: () => cameras.first,
+    );
 
-    try {
-      final cameras = await availableCameras();
-      final firstCamera = cameras.firstWhere(
-            (c) => c.lensDirection == CameraLensDirection.back,
-        orElse: () => cameras.first,
-      );
+    _controller = CameraController(
+      backCam,
+      ResolutionPreset.low,
+      enableAudio: false,
+      imageFormatGroup: ImageFormatGroup.yuv420,
+    );
 
-      _controller = CameraController(
-        firstCamera,
-        ResolutionPreset.low,
-        enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.yuv420,
-      );
+    await _controller!.initialize();
 
-      await _controller!.initialize();
+    // Turn on Flash (Torch) for PPG
+    if (_controller!.value.flashMode == FlashMode.off) {
       await _controller!.setFlashMode(FlashMode.torch);
-      _controller!.startImageStream(_processImage);
-
-      setState(() {
-        _isScanning = true;
-        _status = "PLACE FINGER ON CAMERA";
-      });
-
-    } catch (e) {
-      setState(() => _status = "SENSOR ERROR: $e");
     }
+
+    if (mounted) {
+      setState(() {});
+      _startScanning();
+    }
+  }
+
+  void _startScanning() {
+    _controller!.startImageStream((CameraImage image) {
+      if (_isDetecting) return;
+      _isDetecting = true;
+      _processImage(image);
+      _isDetecting = false;
+    });
   }
 
   void _processImage(CameraImage image) {
-    if (!_isScanning) return;
-
-    // 1. Calculate Average Red Intensity (Luminance approximation)
+    // 1. Calculate Average Red Intensity (Approx via Y-plane)
     double avgRed = 0;
-    int count = 0;
+
+    // We only sample the center of the image for performance
     int width = image.width;
     int height = image.height;
-    int centerX = width ~/ 2;
-    int centerY = height ~/ 2;
-    int sampleBox = 20;
+    int yStride = image.planes[0].bytesPerRow;
+    int sampleSize = 50; // 50x50 center box
 
-    for (int y = centerY - sampleBox; y < centerY + sampleBox; y++) {
-      for (int x = centerX - sampleBox; x < centerX + sampleBox; x++) {
-        if (y >= 0 && y < height && x >= 0 && x < width) {
-          avgRed += image.planes[0].bytes[y * width + x];
-          count++;
-        }
+    int startX = (width - sampleSize) ~/ 2;
+    int startY = (height - sampleSize) ~/ 2;
+
+    for (int y = startY; y < startY + sampleSize; y++) {
+      for (int x = startX; x < startX + sampleSize; x++) {
+        avgRed += image.planes[0].bytes[y * yStride + x];
       }
     }
-    avgRed /= count;
+    avgRed /= (sampleSize * sampleSize);
 
-    _updateMetrics(avgRed);
+    _redAvgHistory.add(avgRed);
+    if (_redAvgHistory.length > kWindowSize) _redAvgHistory.removeAt(0);
+
+    // 2. Peak Detection (Simple Zero-Crossing)
+    if (_redAvgHistory.length >= kWindowSize) {
+      _detectHeartRate();
+    }
+
+    _samples++;
+    if (_samples % 30 == 0) { // Update UI ~ every second (assuming 30fps)
+      if (mounted) setState(() {});
+    }
   }
 
-  void _updateMetrics(double val) {
-    _redHistory.add(val);
-    if (_redHistory.length > _windowSize) _redHistory.removeAt(0);
+  void _detectHeartRate() {
+    // Simple Peak Detection logic
+    double localAvg = _redAvgHistory.reduce((a, b) => a + b) / _redAvgHistory.length;
 
-    // Visualizer Logic
-    if (_redHistory.length > 20) {
-      double localAvg = _redHistory.sublist(_redHistory.length - 10).reduce((a, b) => a + b) / 10;
-      double previousAvg = _redHistory.sublist(_redHistory.length - 20, _redHistory.length - 10).reduce((a, b) => a + b) / 10;
+    if (_redAvgHistory.last > localAvg && _redAvgHistory[_redAvgHistory.length - 2] <= localAvg) {
+      int now = DateTime.now().millisecondsSinceEpoch;
+      _peakTimes.add(now);
 
-      if (mounted) {
-        setState(() {
-          _graphHeight = 30 + ((val - localAvg).abs() * 5).clamp(0.0, 50.0);
-        });
-      }
+      // Keep only last 10 seconds of peaks
+      _peakTimes.removeWhere((t) => now - t > 10000);
 
-      // Check if finger is placed (Brightness check)
-      if (val < 50) {
-        if (mounted && _status != "PLACE FINGER ON CAMERA") {
-          setState(() => _status = "PLACE FINGER ON CAMERA");
+      if (_peakTimes.length > 2) {
+        // Calculate BPM
+        double avgInterval = 0;
+        for (int i = 1; i < _peakTimes.length; i++) {
+          avgInterval += (_peakTimes[i] - _peakTimes[i-1]);
         }
-        return;
-      }
+        avgInterval /= (_peakTimes.length - 1);
 
-      if (mounted && _status != "ANALYZING...") {
-        setState(() => _status = "ANALYZING...");
-      }
+        int newBpm = (60000 / avgInterval).round();
 
-      // Beat Detection
-      if (val > localAvg + 2 && val > previousAvg) {
-        DateTime now = DateTime.now();
-        if (_startTime == null) {
-          _startTime = now;
-          _beatCount = 0;
-        } else {
-          if (now.difference(_startTime!).inMilliseconds > 300) { // Debounce
-            _beatCount++;
+        // Basic Filter (40-200 BPM)
+        if (newBpm > 40 && newBpm < 220) {
+          _bpm = newBpm;
 
-            // Calculate every 5 beats
-            Duration diff = now.difference(_startTime!);
-            if (diff.inSeconds >= 4) {
-              double seconds = diff.inMilliseconds / 1000.0;
-              int bpm = ((_beatCount / seconds) * 60).toInt();
+          // --- DYNAMIC SIMULATION LOGIC ---
+          // Calculating plausible SpO2 and BP based on the measured BPM.
 
-              if (bpm > 50 && bpm < 180) {
-                // --- BIOMETRIC CALCULATIONS (Simulated based on BPM) ---
-                // SpO2: Generally stable, drops slightly with high exertion
-                int spo2 = 96 + Random().nextInt(4);
+          // 1. SpO2: Drops slightly as exertion increases (random jitter for realism)
+          // Base 99, drops by 1 for every 30 BPM over 60.
+          int simSpo2 = (99 - ((_bpm - 60) / 30)).round();
+          // Add random fluctuation +/- 1%
+          simSpo2 += (Random().nextBool() ? 1 : -1);
+          // Clamp to realistic alive range (90-100)
+          simSpo2 = simSpo2.clamp(90, 100);
 
-                // BP: Heuristic approximation (Not medical grade)
-                // Systolic rises with HR, Diastolic is more stable
-                int sys = 110 + ((bpm - 60) ~/ 2) + Random().nextInt(10);
-                int dia = 70 + ((bpm - 60) ~/ 4) + Random().nextInt(5);
+          // 2. Systolic BP: Increases with HR (Linear approx)
+          // Base 110, adds 1 for every 2 BPM over 60.
+          int simSys = (110 + ((_bpm - 60) / 2)).round();
+          simSys = simSys.clamp(90, 190);
 
-                if(mounted) {
-                  setState(() {
-                    _currentBpm = bpm;
-                    _currentSpO2 = spo2;
-                    _currentSys = sys;
-                    _currentDia = dia;
-                    _status = "VITALS CAPTURED";
-                  });
-                }
+          // 3. Diastolic BP: Increases slower than Systolic
+          // Base 70, adds 1 for every 3 BPM over 60.
+          int simDia = (70 + ((_bpm - 60) / 3)).round();
+          simDia = simDia.clamp(60, 110);
 
-                // Send data back
-                widget.onReadingsDetected(_currentBpm, _currentSpO2, _currentSys, _currentDia);
-              }
-
-              _startTime = now;
-              _beatCount = 0;
-            }
-          }
+          widget.onReadingsDetected(_bpm, simSpo2, simSys, simDia);
         }
       }
     }
+
+    // Update progress
+    _progress = (_peakTimes.length / 5.0).clamp(0.0, 1.0);
   }
 
   @override
@@ -184,70 +167,51 @@ class _HeartRateScannerState extends State<HeartRateScanner> {
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      child: SciFiPanel(
-        showBg: true,
-        borderColor: kSciFiRed,
-        title: "BIOMETRIC SCAN",
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Camera Preview
-            Container(
-              height: 120, width: double.infinity,
-              margin: const EdgeInsets.symmetric(vertical: 10),
-              decoration: BoxDecoration(
-                border: Border.all(color: kSciFiRed.withOpacity(0.5)),
-                color: Colors.black,
-              ),
-              child: ClipRect(
-                child: _controller != null && _controller!.value.isInitialized
-                    ? CameraPreview(_controller!)
-                    : const Center(child: CircularProgressIndicator(color: kSciFiRed)),
-              ),
+    if (_controller == null || !_controller!.value.isInitialized) {
+      return const Center(child: CircularProgressIndicator(color: Colors.greenAccent));
+    }
+
+    // Determine estimated values for UI display
+    String estimateText = "--";
+    if (_bpm > 0) {
+      // Recalculate same logic for immediate UI feedback
+      int s = (99 - ((_bpm - 60) / 30)).round().clamp(90, 100);
+      int sys = (110 + ((_bpm - 60) / 2)).round().clamp(90, 190);
+      int dia = (70 + ((_bpm - 60) / 3)).round().clamp(60, 110);
+      estimateText = "SpO2: $s% | BP: $sys/$dia";
+    }
+
+    return AlertDialog(
+      backgroundColor: Colors.black87,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: const BorderSide(color: Colors.greenAccent)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text("BIO-SCANNING...", style: TextStyle(color: Colors.greenAccent, fontFamily: 'Orbitron')),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 150,
+            width: 150,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(75),
+              child: CameraPreview(_controller!),
             ),
-
-            // Graph
-            Container(
-              height: 40, width: double.infinity,
-              color: Colors.black54,
-              child: Center(
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 100),
-                  height: _graphHeight, width: 200,
-                  decoration: BoxDecoration(color: kSciFiRed, boxShadow: [BoxShadow(color: kSciFiRed, blurRadius: 10)]),
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 10),
-            Text(_status, style: const TextStyle(color: Colors.white, fontFamily: 'Courier', fontSize: 10)),
-            const SizedBox(height: 10),
-
-            // Metrics Grid
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                _MetricBox("BPM", "$_currentBpm", kSciFiRed),
-                _MetricBox("SpO2", "$_currentSpO2%", kSciFiCyan),
-                _MetricBox("BP", "$_currentSys/$_currentDia", kSciFiGreen),
-              ],
-            ),
-
-            const SizedBox(height: 15),
-            SciFiButton(label: "CLOSE", icon: Icons.check, color: Colors.white, onTap: () => Navigator.pop(context))
-          ],
-        ),
+          ),
+          const SizedBox(height: 10),
+          const Text("Place finger on camera & flash", style: TextStyle(color: Colors.white70, fontSize: 10)),
+          const SizedBox(height: 20),
+          LinearProgressIndicator(value: _progress, backgroundColor: Colors.white10, valueColor: const AlwaysStoppedAnimation(Colors.greenAccent)),
+          const SizedBox(height: 20),
+          Text(_bpm > 0 ? "$_bpm BPM" : "--", style: const TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.bold, fontFamily: 'Orbitron')),
+          const SizedBox(height: 5),
+          Text(estimateText, style: const TextStyle(color: Colors.white70, fontSize: 12, fontFamily: 'Courier')),
+        ],
       ),
-    );
-  }
-
-  Widget _MetricBox(String label, String value, Color color) {
-    return Column(
-      children: [
-        Text(label, style: TextStyle(color: Colors.grey, fontSize: 8)),
-        Text(value, style: TextStyle(color: color, fontFamily: 'Orbitron', fontSize: 16, fontWeight: FontWeight.bold)),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text("DONE", style: TextStyle(color: Colors.greenAccent)),
+        )
       ],
     );
   }
