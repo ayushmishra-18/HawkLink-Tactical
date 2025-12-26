@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:noise_meter/noise_meter.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -8,9 +9,9 @@ class AcousticSensor {
   NoiseMeter? _noiseMeter;
   bool _isListening = false;
 
-  // Threshold in Decibels (Adjusted for demo stability)
-  // Was 95.0 -> Now 110.0 (Requires a very loud sound/clap near mic)
-  static const double kGunshotThreshold = 110.0;
+  // Threshold: 85.0 dB for easier testing (Simulated Gunshot/Clap)
+  // In a real scenario, this would be closer to 110-120 dB
+  static const double kGunshotThreshold = 85.0;
 
   DateTime _lastTrigger = DateTime.now();
 
@@ -26,23 +27,25 @@ class AcousticSensor {
               (NoiseReading reading) {
             _analyzeNoise(reading);
           },
-          onError: (err) => print("Mic Error: $err"),
+          onError: (err) => debugPrint("Mic Error: $err"),
         );
         _isListening = true;
+        debugPrint("Acoustic Sensor Started.");
       } catch (e) {
-        print("Noise Meter Init Error: $e");
+        debugPrint("Noise Meter Init Error: $e");
       }
+    } else {
+      debugPrint("Microphone permission denied.");
     }
   }
 
   void _analyzeNoise(NoiseReading reading) {
-    // Check max decibel against new threshold
     if (reading.maxDecibel > kGunshotThreshold) {
-      // Debounce: Prevent 10 alerts for 1 loud sound.
-      // Only allow 1 alert every 2 seconds.
+      // Debounce: Only allow 1 alert every 2 seconds
       if (DateTime.now().difference(_lastTrigger).inSeconds > 2) {
         _lastTrigger = DateTime.now();
-        onGunshotDetected(); // TRIGGER ALERT
+        debugPrint("!!! GUNSHOT DETECTED (${reading.maxDecibel.toStringAsFixed(1)} dB) !!!");
+        onGunshotDetected();
       }
     }
   }
