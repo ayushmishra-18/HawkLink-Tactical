@@ -36,6 +36,10 @@ class SoldierUnit {
   String bp;
   double temp;
   String status;
+  // NEW FIELDS
+  bool isHeatStress;
+  bool isDeadReckoning;
+
   DateTime lastSeen;
   Socket? socket;
   List<LatLng> pathHistory;
@@ -53,6 +57,8 @@ class SoldierUnit {
     this.bp="120/80",
     this.temp=98.6,
     this.status="IDLE",
+    this.isHeatStress = false,
+    this.isDeadReckoning = false,
     required this.lastSeen,
     this.socket,
     List<LatLng>? history
@@ -132,7 +138,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     _getLocalIps();
     _loadLogs();
 
-    _pulseController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat();
+    _pulseController = AnimationController(vsync: this, duration: const Duration(seconds: 1))..repeat(reverse: true);
     _ekgController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat();
 
     _watchdogTimer = Timer.periodic(const Duration(seconds: 1), _checkNetworkHealth);
@@ -244,6 +250,9 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
         String p=await _saveImageToDisk(j['sender'],j['content']);
         _log(j['sender'], "📸 INTEL RECEIVED", imagePath:p);
         _playSfx('connect.mp3');
+      } else if(j['type']=='HEAT_STRESS'){
+        _log(j['sender'], "⚠️ HEAT STRESS ALERT");
+        _playAlert('alert.mp3');
       }
     }catch(e){}
   }
@@ -251,6 +260,11 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   void _updateUnit(Socket s, Map<String,dynamic> d) {
     setState(() {
       final id=d['id']; final idx=_units.indexWhere((u)=>u.id==id); final loc=LatLng(d['lat'],d['lng']);
+
+      // PARSE NEW FLAGS
+      bool isHeat = d['heat'] ?? false;
+      bool isDr = d['dr'] ?? false;
+
       if(idx!=-1){
         var u = _units[idx];
         u.location=loc;
@@ -262,11 +276,28 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
         u.bp=d['bp']??"120/80";
         u.temp=(d['temp']??98.6).toDouble();
         u.status=d['state'];
+        u.isHeatStress = isHeat;
+        u.isDeadReckoning = isDr;
         u.lastSeen=DateTime.now();
         u.socket=s;
         if(u.pathHistory.isEmpty || const Distance().as(LengthUnit.Meter, u.pathHistory.last, loc)>5) u.pathHistory.add(loc);
       } else {
-        _units.add(SoldierUnit(id:id, location:loc, role:d['role']??"ASSAULT", battery:d['bat'], bpm:d['bpm']??75, spO2:d['spo2']??98, bp:d['bp']??"120/80", temp:(d['temp']??98.6).toDouble(), status:d['state'], lastSeen:DateTime.now(), socket:s, history:[loc]));
+        _units.add(SoldierUnit(
+            id:id,
+            location:loc,
+            role:d['role']??"ASSAULT",
+            battery:d['bat'],
+            bpm:d['bpm']??75,
+            spO2:d['spo2']??98,
+            bp:d['bp']??"120/80",
+            temp:(d['temp']??98.6).toDouble(),
+            status:d['state'],
+            isHeatStress: isHeat,
+            isDeadReckoning: isDr,
+            lastSeen:DateTime.now(),
+            socket:s,
+            history:[loc]
+        ));
         _log("NET", "UNIT REGISTERED: $id"); _playSfx('connect.mp3');
       }
     });
@@ -274,27 +305,22 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
 
   void _log(String s, String m, {String? imagePath}) { String t=DateFormat('HH:mm:ss').format(DateTime.now()); String p=m.contains("COPY")?"✅ ":""; String e="$p[$t] $s: $m"; setState(()=>_logs.insert(0, {'text':e, 'image':imagePath})); _saveLog(e); }
 
-  // --- UPDATED COMMAND HANDLER ---
   void _handleCommandInput(String input) {
     if(input.isEmpty) return;
 
-    // Check for Targeted Command (starts with @)
     if (input.startsWith('@')) {
-      // Logic: @ALPHA-1 Move to point A
       List<String> parts = input.split(' ');
       if (parts.isNotEmpty) {
-        String targetId = parts[0].substring(1).toUpperCase(); // "ALPHA-1"
-        String content = parts.skip(1).join(' '); // "Move to point A"
+        String targetId = parts[0].substring(1).toUpperCase();
+        String content = parts.skip(1).join(' ');
 
-        // Find the unit
         try {
           final u = _units.firstWhere((u) => u.id == targetId);
           if (u.socket != null) {
-            // Send Private Packet
             String p = _encrypter.encrypt(jsonEncode({
               'type': 'CHAT',
               'sender': 'COMMAND (PVT)',
-              'content': ">> $content" // Add arrows to show priority
+              'content': ">> $content"
             }), iv: _iv).base64;
 
             u.socket!.add(utf8.encode("$p\n"));
@@ -308,10 +334,8 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
         }
       }
     } else {
-      // Standard Broadcast
       _broadcastOrder(input);
     }
-
     _cmdController.clear();
   }
 
@@ -323,9 +347,59 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   }
 
   void _issueMoveOrder(LatLng d) { if(_isDrawingMode||_placingWaypointType!=null||_isDeleteWaypointMode||_selectedUnitId==null) return; try{ final u=_units.firstWhere((x)=>x.id==_selectedUnitId); String p=_encrypter.encrypt(jsonEncode({'type':'MOVE_TO', 'sender':'COMMAND', 'content':"MOVE TO ${d.latitude.toStringAsFixed(4)}, ${d.longitude.toStringAsFixed(4)}", 'lat':d.latitude, 'lng':d.longitude}), iv:_iv).base64; u.socket?.add(utf8.encode("$p\n")); _log("CMD", "VECTOR ASSIGNED: $u.id"); _playSfx('order.mp3'); }catch(e){} }
-  void _onMapTap(TapPosition p, LatLng l) { if(_isDeleteWaypointMode){ _removeWaypointNear(l); setState(()=>_isDeleteWaypointMode=false); return; } if(_placingWaypointType!=null){ _deployWaypoint(l, _placingWaypointType!); setState(()=>_placingWaypointType=null); return; } if(_isDrawingMode){ setState(()=>_tempDrawPoints.add(l)); return; } setState(()=>_selectedUnitId=null); }
+
+  void _onMapTap(TapPosition p, LatLng l) {
+    if(_isDeleteWaypointMode){
+      _removeWaypointNear(l);
+      setState(()=>_isDeleteWaypointMode=false); // Auto-exit delete mode after one attempt
+      return;
+    }
+    if(_placingWaypointType!=null){
+      _deployWaypoint(l, _placingWaypointType!);
+      setState(()=>_placingWaypointType=null);
+      return;
+    }
+    if(_isDrawingMode){
+      setState(()=>_tempDrawPoints.add(l));
+      return;
+    }
+    setState(()=>_selectedUnitId=null);
+  }
+
   void _deployWaypoint(LatLng l, String t) { String id="${t}_${DateTime.now().millisecondsSinceEpoch}"; TacticalWaypoint w=TacticalWaypoint(id:id, type:t, location:l, created:DateTime.now()); setState(()=>_waypoints.add(w)); String p=_encrypter.encrypt(jsonEncode({'type':'WAYPOINT', 'action':'ADD', 'data':w.toJson()}), iv:_iv).base64; for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){} _log("CMD", "WAYPOINT DEPLOYED: $t"); _playSfx('order.mp3'); }
-  void _removeWaypointNear(LatLng l) { try{ final w=_waypoints.firstWhere((x)=>const Distance().as(LengthUnit.Meter, x.location, l)<200); setState(()=>_waypoints.remove(w)); String p=_encrypter.encrypt(jsonEncode({'type':'WAYPOINT', 'action':'REMOVE', 'id':w.id}), iv:_iv).base64; for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){} _log("CMD", "WAYPOINT REMOVED"); _playSfx('connect.mp3'); }catch(e){} }
+
+  // --- UPDATED WAYPOINT REMOVAL LOGIC ---
+  void _removeWaypointNear(LatLng tapLocation) {
+    try {
+      // 1. Find the closest waypoint within 50 meters (reduced from 200m for precision)
+      // Sort by distance to find the absolute closest one
+      _waypoints.sort((a, b) {
+        double distA = const Distance().as(LengthUnit.Meter, a.location, tapLocation);
+        double distB = const Distance().as(LengthUnit.Meter, b.location, tapLocation);
+        return distA.compareTo(distB);
+      });
+
+      // Check if the closest one is within range
+      final closest = _waypoints.first;
+      double distance = const Distance().as(LengthUnit.Meter, closest.location, tapLocation);
+
+      if (distance < 50) { // Precision threshold
+        setState(() => _waypoints.remove(closest));
+
+        // Notify Units
+        String p = _encrypter.encrypt(jsonEncode({'type': 'WAYPOINT', 'action': 'REMOVE', 'id': closest.id}), iv: _iv).base64;
+        for (var u in _units) try { u.socket?.add(utf8.encode("$p\n")); } catch (e) {}
+
+        _log("CMD", "REMOVED WAYPOINT: ${closest.type}");
+        _playSfx('connect.mp3');
+      } else {
+        _log("CMD", "NO WAYPOINT FOUND NEAR TAP");
+      }
+    } catch (e) {
+      // List was likely empty
+    }
+  }
+
   void _toggleDrawingMode() { setState(() { _isDrawingMode=!_isDrawingMode; _tempDrawPoints=[]; }); }
   void _deployCustomZone() { if(_tempDrawPoints.length<3) return; setState(() { _activeDangerZone=List.from(_tempDrawPoints); _isDrawingMode=false; _tempDrawPoints=[]; }); List<List<double>> pts=_activeDangerZone.map((p)=>[p.latitude, p.longitude]).toList(); String p=_encrypter.encrypt(jsonEncode({'type':'ZONE', 'sender':'COMMAND', 'points':pts}), iv:_iv).base64; for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){} _log("CMD", "ZONE DEPLOYED"); _playAlert('alert.mp3'); }
   void _clearZone() { setState(() { _activeDangerZone=[]; _tempDrawPoints=[]; }); String p=_encrypter.encrypt(jsonEncode({'type':'ZONE', 'sender':'COMMAND', 'points':[]}), iv:_iv).base64; for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){} _log("CMD", "ZONE CLEARED"); }
@@ -381,101 +455,123 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                         itemBuilder: (ctx, i) {
                           final u = _units[i];
                           bool isSelected = u.id == _selectedUnitId;
+
+                          // NEW STATE LOGIC
                           bool isCritical = u.status == "SOS" || u.bpm > 140;
                           bool isLost = u.status == "LOST";
                           bool isKilled = u.status == "KILLED";
+                          bool isHeat = u.isHeatStress;
+                          bool isDr = u.isDeadReckoning;
 
-                          Color mainColor = isKilled ? Colors.red : (isLost ? Colors.grey : (isCritical ? kSciFiRed : kSciFiGreen));
+                          Color mainColor = kSciFiGreen;
+                          if (isKilled) mainColor = Colors.red;
+                          else if (isLost) mainColor = Colors.grey;
+                          else if (u.status == "SOS" || isHeat) mainColor = kSciFiRed;
+                          else if (isDr) mainColor = Colors.amber;
+
                           if (isSelected) mainColor = kSciFiCyan;
 
-                          return GestureDetector(
-                            onTap: () { setState(() => _selectedUnitId = u.id); _mapController.move(u.location, 17); },
-                            child: SciFiPanel(
-                              borderColor: mainColor.withOpacity(0.8),
-                              showBg: true,
-                              child: Opacity(
-                                opacity: isLost ? 0.6 : 1.0,
-                                child: Column(
-                                  children: [
-                                    Row(children: [
-                                      Icon(_getRoleIcon(u.role), color: mainColor, size: 18),
-                                      const SizedBox(width: 8),
-                                      Text(u.id, style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Orbitron', fontSize: 14)),
-                                      const Spacer(),
-                                      _buildSignalBars(u.secondsSincePing),
-                                      const SizedBox(width: 8),
-                                      if(u.status=="SOS") const BlinkingText("SOS", color: kSciFiRed)
-                                      else if(isKilled) const Text("ZEROIZED", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 10))
-                                      else if(isLost) const Text("LOST", style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold, fontSize: 10))
-                                        else Text("ACTIVE", style: TextStyle(color: mainColor, fontSize: 10))
-                                    ]),
-                                    const SizedBox(height: 8),
+                          return AnimatedBuilder(
+                            animation: _pulseController,
+                            builder: (context, child) {
+                              Color displayColor = mainColor;
+                              if ((u.status == "SOS" || isHeat) && !isKilled && !isLost) {
+                                displayColor = Color.lerp(mainColor, mainColor.withOpacity(0.3), _pulseController.value)!;
+                              }
 
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              return GestureDetector(
+                                onTap: () { setState(() => _selectedUnitId = u.id); _mapController.move(u.location, 17); },
+                                child: SciFiPanel(
+                                  borderColor: displayColor.withOpacity(0.8),
+                                  showBg: true,
+                                  child: Opacity(
+                                    opacity: isLost ? 0.6 : 1.0,
+                                    child: Column(
                                       children: [
-                                        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                          Text("BPM", style: TextStyle(color: Colors.grey, fontSize: 8)),
-                                          Row(children: [
-                                            Text(isLost ? "--" : "${u.bpm}", style: TextStyle(color: isCritical ? kSciFiRed : Colors.white, fontSize: 20, fontFamily: 'Orbitron', fontWeight: FontWeight.bold)),
-                                            const SizedBox(width: 4),
-                                            Icon(Icons.monitor_heart, size: 12, color: isCritical ? kSciFiRed : kSciFiGreen)
-                                          ]),
+                                        Row(children: [
+                                          Icon(isDr ? Icons.saved_search : _getRoleIcon(u.role), color: displayColor, size: 18),
+                                          const SizedBox(width: 8),
+                                          Text(u.id, style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Orbitron', fontSize: 14)),
+                                          const Spacer(),
+                                          _buildSignalBars(u.secondsSincePing),
+                                          const SizedBox(width: 8),
+
+                                          if(u.status=="SOS") BlinkingText("SOS", color: kSciFiRed)
+                                          else if(isHeat) BlinkingText("HEAT STRESS", color: kSciFiRed)
+                                          else if(isKilled) const Text("ZEROIZED", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 10))
+                                            else if(isLost) const Text("LOST", style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold, fontSize: 10))
+                                              else if(isDr) const Text("DR MODE", style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 10))
+                                                else Text("ACTIVE", style: TextStyle(color: mainColor, fontSize: 10))
                                         ]),
-                                        SizedBox(
-                                          width: 70, height: 30,
-                                          child: isLost
-                                              ? Container(height: 1, color: Colors.grey)
-                                              : CustomPaint(painter: EkgPainter(animationValue: _ekgController.value, color: isCritical ? kSciFiRed : kSciFiGreen)),
+                                        const SizedBox(height: 8),
+
+                                        Row(
+                                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                              Text("BPM", style: TextStyle(color: Colors.grey, fontSize: 8)),
+                                              Row(children: [
+                                                Text(isLost ? "--" : "${u.bpm}", style: TextStyle(color: (isCritical || isHeat) ? kSciFiRed : Colors.white, fontSize: 20, fontFamily: 'Orbitron', fontWeight: FontWeight.bold)),
+                                                const SizedBox(width: 4),
+                                                Icon(Icons.monitor_heart, size: 12, color: (isCritical || isHeat) ? kSciFiRed : kSciFiGreen)
+                                              ]),
+                                            ]),
+                                            SizedBox(
+                                              width: 70, height: 30,
+                                              child: isLost
+                                                  ? Container(height: 1, color: Colors.grey)
+                                                  : CustomPaint(painter: EkgPainter(animationValue: _ekgController.value, color: (isCritical || isHeat) ? kSciFiRed : kSciFiGreen)),
+                                            ),
+                                            Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                                              Row(children: [
+                                                Text("BP: ", style: TextStyle(color: Colors.grey, fontSize: 8)),
+                                                Text(isLost ? "--" : u.bp, style: TextStyle(color: (isCritical || isHeat) ? kSciFiRed : Colors.white, fontSize: 11, fontFamily: 'Orbitron', fontWeight: FontWeight.bold)),
+                                              ]),
+                                              const SizedBox(height: 2),
+                                              Text("SpO2 | TEMP", style: TextStyle(color: Colors.grey, fontSize: 8)),
+                                              Text(isLost ? "--" : "${u.spO2}% | ${u.temp.toStringAsFixed(1)}°F", style: TextStyle(color: kSciFiCyan, fontSize: 11, fontFamily: 'Orbitron', fontWeight: FontWeight.bold)),
+                                            ]),
+                                          ],
                                         ),
-                                        Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                                          Row(children: [
-                                            Text("BP: ", style: TextStyle(color: Colors.grey, fontSize: 8)),
-                                            Text(isLost ? "--" : u.bp, style: TextStyle(color: isCritical ? kSciFiRed : Colors.white, fontSize: 11, fontFamily: 'Orbitron', fontWeight: FontWeight.bold)),
-                                          ]),
-                                          const SizedBox(height: 2),
-                                          Text("SpO2 | TEMP", style: TextStyle(color: Colors.grey, fontSize: 8)),
-                                          Text(isLost ? "--" : "${u.spO2}% | ${u.temp.toStringAsFixed(1)}°F", style: TextStyle(color: kSciFiCyan, fontSize: 11, fontFamily: 'Orbitron', fontWeight: FontWeight.bold)),
+                                        const SizedBox(height: 8),
+
+                                        Row(children: [
+                                          Text("BAT", style: TextStyle(color: Colors.grey, fontSize: 8)),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: ClipRRect(
+                                              borderRadius: BorderRadius.circular(2),
+                                              child: LinearProgressIndicator(
+                                                value: u.battery / 100,
+                                                backgroundColor: Colors.white10,
+                                                valueColor: AlwaysStoppedAnimation(u.battery < 20 ? kSciFiRed : kSciFiGreen),
+                                                minHeight: 4,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Text("${u.battery}%", style: TextStyle(color: Colors.grey, fontSize: 8)),
                                         ]),
+
+                                        if(isSelected && !isKilled) ...[
+                                          const Divider(color: Colors.white10),
+                                          SizedBox(
+                                            width: double.infinity,
+                                            height: 30,
+                                            child: ElevatedButton.icon(
+                                              style: ElevatedButton.styleFrom(backgroundColor: Colors.red.withOpacity(0.2), foregroundColor: Colors.red),
+                                              icon: const Icon(Icons.delete_forever, size: 16),
+                                              label: const Text("ZEROIZE UNIT", style: TextStyle(fontSize: 10, letterSpacing: 1, fontWeight: FontWeight.bold)),
+                                              onPressed: () => _sendKillCommand(u),
+                                            ),
+                                          )
+                                        ]
                                       ],
                                     ),
-                                    const SizedBox(height: 8),
-
-                                    Row(children: [
-                                      Text("BAT", style: TextStyle(color: Colors.grey, fontSize: 8)),
-                                      const SizedBox(width: 8),
-                                      Expanded(
-                                        child: ClipRRect(
-                                          borderRadius: BorderRadius.circular(2),
-                                          child: LinearProgressIndicator(
-                                            value: u.battery / 100,
-                                            backgroundColor: Colors.white10,
-                                            valueColor: AlwaysStoppedAnimation(u.battery < 20 ? kSciFiRed : kSciFiGreen),
-                                            minHeight: 4,
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Text("${u.battery}%", style: TextStyle(color: Colors.grey, fontSize: 8)),
-                                    ]),
-
-                                    if(isSelected && !isKilled) ...[
-                                      const Divider(color: Colors.white10),
-                                      SizedBox(
-                                        width: double.infinity,
-                                        height: 30,
-                                        child: ElevatedButton.icon(
-                                          style: ElevatedButton.styleFrom(backgroundColor: Colors.red.withOpacity(0.2), foregroundColor: Colors.red),
-                                          icon: const Icon(Icons.delete_forever, size: 16),
-                                          label: const Text("ZEROIZE UNIT", style: TextStyle(fontSize: 10, letterSpacing: 1, fontWeight: FontWeight.bold)),
-                                          onPressed: () => _sendKillCommand(u),
-                                        ),
-                                      )
-                                    ]
-                                  ],
+                                  ),
                                 ),
-                              ),
-                            ),
+                              );
+                            },
                           );
                         },
                       ),
@@ -496,7 +592,6 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                             )
                         )
                     ),
-                    // INPUT FIELD HANDLES @COMMANDS
                     Padding(padding: const EdgeInsets.all(8.0), child: TextField(
                         controller: _cmdController,
                         style: const TextStyle(color: kSciFiCyan, fontFamily: 'Courier New'),
@@ -508,7 +603,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                             border: OutlineInputBorder(borderSide: BorderSide(color: kSciFiCyan)),
                             isDense: true
                         ),
-                        onSubmitted: _handleCommandInput // CHANGED THIS
+                        onSubmitted: _handleCommandInput
                     )),
                   ],
                 ),
@@ -534,7 +629,26 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                           MarkerLayer(markers: _units.map((u) {
                             bool isSelected = u.id == _selectedUnitId;
                             bool isLost = u.status == "LOST";
-                            return Marker(point: u.location, width: 80, height: 80, child: Transform.rotate(angle: -_rotation * (math.pi / 180), child: Stack(alignment: Alignment.center, children: [if(u.status=="SOS") ScaleTransition(scale: _pulseController, child: Container(width: 60, height: 60, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: kSciFiRed, width: 2)))), if(isSelected) RotationTransition(turns: _pulseController, child: Container(width: 50, height: 50, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: kSciFiCyan, width: 2, style: BorderStyle.solid)))), Column(mainAxisSize: MainAxisSize.min, children: [Text(u.id, style: TextStyle(color: isSelected ? kSciFiCyan : Colors.white, fontSize: 8, fontWeight: FontWeight.bold, backgroundColor: Colors.black54)), Transform.rotate(angle: (u.heading * (math.pi / 180)), child: Icon(_getRoleIcon(u.role), color: isLost ? Colors.grey : (u.status=="SOS" ? kSciFiRed : kSciFiCyan), size: 24))])]))); }).toList()),
+                            bool isDr = u.isDeadReckoning;
+                            bool isHeat = u.isHeatStress;
+
+                            Color iconColor = kSciFiCyan;
+                            if (isLost) iconColor = Colors.grey;
+                            else if (u.status == "SOS" || isHeat) iconColor = kSciFiRed;
+                            else if (isDr) iconColor = Colors.amber;
+
+                            return Marker(point: u.location, width: 80, height: 80, child: Transform.rotate(angle: -_rotation * (math.pi / 180), child: Stack(alignment: Alignment.center, children: [
+
+                              if(u.status=="SOS" || isHeat) ScaleTransition(scale: _pulseController, child: Container(width: 60, height: 60, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: kSciFiRed, width: 2)))),
+                              if(isSelected) RotationTransition(turns: _pulseController, child: Container(width: 50, height: 50, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: kSciFiCyan, width: 2, style: BorderStyle.solid)))),
+
+                              Column(mainAxisSize: MainAxisSize.min, children: [
+                                Text(u.id, style: TextStyle(color: isSelected ? kSciFiCyan : Colors.white, fontSize: 8, fontWeight: FontWeight.bold, backgroundColor: Colors.black54)),
+                                Transform.rotate(angle: (u.heading * (math.pi / 180)), child:
+                                Icon(isDr ? Icons.saved_search : _getRoleIcon(u.role), color: iconColor, size: 24)
+                                )
+                              ])
+                            ]))); }).toList()),
                         ],
                       ),
                     ),
@@ -560,7 +674,8 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                         ),
                       ),
                     ),
-                    if (!_isDrawingMode) Positioned(bottom: 30, left: 20, right: 20, child: Center(child: SciFiPanel(showBg: true, borderColor: kSciFiGreen.withOpacity(0.5), child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8.0), child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(mainAxisSize: MainAxisSize.min, mainAxisAlignment: MainAxisAlignment.center, children: [SciFiButton(label: "RALLY", icon: Icons.flag, color: Colors.blue, onTap: () => setState(() => _placingWaypointType = "RALLY")), const SizedBox(width: 8), SciFiButton(label: "ENEMY", icon: Icons.warning, color: kSciFiRed, onTap: () => setState(() => _placingWaypointType = "ENEMY")), const SizedBox(width: 8), SciFiButton(label: "MED", icon: Icons.medical_services, color: Colors.white, onTap: () => setState(() => _placingWaypointType = "MED")), const SizedBox(width: 8), SciFiButton(label: "LZ", icon: Icons.flight_land, color: kSciFiGreen, onTap: () => setState(() => _placingWaypointType = "LZ")), const SizedBox(width: 20), SciFiButton(label: "DEL", icon: Icons.delete, color: Colors.orange, onTap: () => setState(() => _isDeleteWaypointMode = !_isDeleteWaypointMode))])))))),
+                    if (!_isDrawingMode) Positioned(bottom: 30, left: 20, right: 20, child: Center(child: SciFiPanel(showBg: true, borderColor: kSciFiGreen.withOpacity(0.5), child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8.0), child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(mainAxisSize: MainAxisSize.min, mainAxisAlignment: MainAxisAlignment.center, children: [SciFiButton(label: "RALLY", icon: Icons.flag, color: Colors.blue, onTap: () => setState(() => _placingWaypointType = "RALLY")), const SizedBox(width: 8), SciFiButton(label: "ENEMY", icon: Icons.warning, color: kSciFiRed, onTap: () => setState(() => _placingWaypointType = "ENEMY")), const SizedBox(width: 8), SciFiButton(label: "MED", icon: Icons.medical_services, color: Colors.white, onTap: () => setState(() => _placingWaypointType = "MED")), const SizedBox(width: 8), SciFiButton(label: "LZ", icon: Icons.flight_land, color: kSciFiGreen, onTap: () => setState(() => _placingWaypointType = "LZ")), const SizedBox(width: 20), SciFiButton(label: "DEL", icon: Icons.delete, color: _isDeleteWaypointMode ? Colors.red : Colors.orange, onTap: () => setState(() => _isDeleteWaypointMode = !_isDeleteWaypointMode))])))))),
+                    if (_isDeleteWaypointMode) Positioned(top: 80, left: 0, right: 0, child: Center(child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8), decoration: BoxDecoration(color: Colors.black87, border: Border.all(color: Colors.red)), child: const Text("TAP WAYPOINT TO DELETE", style: TextStyle(color: Colors.red, fontFamily: 'Orbitron', fontWeight: FontWeight.bold))))),
                     if (_isDrawingMode) Positioned(top: 20, left: 0, right: 0, child: Center(child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8), decoration: BoxDecoration(color: Colors.black87, border: Border.all(color: Colors.orange)), child: const Text("DRAWING MODE: TAP POINTS", style: TextStyle(color: Colors.orange, fontFamily: 'Orbitron'))))),
                     if (_placingWaypointType != null) Positioned(top: 80, left: 0, right: 0, child: Center(child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8), decoration: BoxDecoration(color: Colors.black87, border: Border.all(color: Colors.yellow)), child: Text("PLACE $_placingWaypointType", style: const TextStyle(color: Colors.yellow, fontFamily: 'Orbitron'))))),
                   ],

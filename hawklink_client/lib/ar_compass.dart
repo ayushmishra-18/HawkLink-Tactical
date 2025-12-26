@@ -2,9 +2,8 @@ import 'dart:math';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_compass/flutter_compass.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
-import 'main.dart'; // To access TacticalWaypoint class
+import 'models.dart'; // IMPORT SHARED MODELS
 import 'sci_fi_ui.dart';
 
 class ArCompassView extends StatefulWidget {
@@ -35,9 +34,11 @@ class _ArCompassViewState extends State<ArCompassView> {
   Future<void> _initCamera() async {
     try {
       final cameras = await availableCameras();
-      _controller = CameraController(cameras.first, ResolutionPreset.medium, enableAudio: false);
-      await _controller!.initialize();
-      if (mounted) setState(() {});
+      if (cameras.isNotEmpty) {
+        _controller = CameraController(cameras.first, ResolutionPreset.medium, enableAudio: false);
+        await _controller!.initialize();
+        if (mounted) setState(() {});
+      }
     } catch (e) {
       debugPrint("AR ERROR: $e");
     }

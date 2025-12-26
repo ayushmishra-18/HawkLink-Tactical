@@ -1,3 +1,6 @@
+// SOLDIER UPLINK - CLIENT SIDE
+// Run this on Android/iOS devices for field operatives.
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -17,16 +20,14 @@ import 'sci_fi_ui.dart';
 import 'heart_rate_scanner.dart';
 import 'ar_compass.dart';
 import 'acoustic_sensor.dart';
+import 'models.dart'; // IMPORT SHARED MODELS
 
 // --- CONFIGURATION ---
 const int kPort = 4444;
 const String kPreSharedKey = 'HAWKLINK_TACTICAL_SECURE_KEY_256';
 const String kFixedIV =      'HAWKLINK_IV_16ch';
 
-class TacticalWaypoint {
-  String id; String type; LatLng location;
-  TacticalWaypoint({required this.id, required this.type, required this.location});
-}
+// NOTE: TacticalWaypoint class is in models.dart
 
 void main() {
   runApp(const SoldierApp());
@@ -91,9 +92,16 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   double _temp = 98.6;
   bool _isBioActive = false;
 
+  // --- FATIGUE MONITOR ---
+  int _fatigueAccumulator = 0;
+  bool _isHeatStress = false;
+  static const int kFatigueThresholdSeconds = 10;
+  static const int kHighBpmThreshold = 150;
+
   // --- SENSORS ---
   Timer? _biometricTimer;
   Timer? _weatherTimer;
+
   final MapController _mapController = MapController();
   LatLng _myLocation = const LatLng(40.7128, -74.0060);
   double _heading = 0.0;
@@ -122,20 +130,37 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     _initAcousticSensor();
 
     // BIO-SIMULATION LOOP
-    _biometricTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
+    _biometricTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
         setState(() {
-          int base = _sosController.isAnimating ? 120 : 75;
+          // --- SIMULATION (COMMENT OUT FOR REAL USE) ---
+          int base = _sosController.isAnimating ? 130 : 75;
+          if (Random().nextInt(20) == 0) base = 160;
           _heartRate = base + Random().nextInt(10) - 5;
           _spO2 = 96 + Random().nextInt(4);
           _systolic = 115 + Random().nextInt(10);
           _diastolic = 75 + Random().nextInt(10);
           _temp = 98.0 + Random().nextDouble();
+          // ---------------------------------------------
+
+          // Fatigue Logic
+          if (_heartRate > kHighBpmThreshold) {
+            _fatigueAccumulator++;
+          } else {
+            if (_fatigueAccumulator > 0) _fatigueAccumulator--;
+          }
+
+          if (_fatigueAccumulator >= kFatigueThresholdSeconds && !_isHeatStress) {
+            _isHeatStress = true;
+            if (!widget.isStealth) _tts.speak("Warning. Heat Stress Detected.");
+            _sendPacket({'type': 'HEAT_STRESS', 'sender': _idController.text.toUpperCase(), 'val': true});
+          } else if (_fatigueAccumulator == 0 && _isHeatStress) {
+            _isHeatStress = false;
+          }
         });
       }
     });
 
-    // WEATHER API LOOP
     _weatherTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
       if (_hasFix) _fetchRealWeather();
     });
@@ -169,13 +194,12 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   }
 
   void _handleGunshot() {
-    if (_socket == null) return;
     setState(() => _isGunshotDetected = true);
+    _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': '!!! SHOTS FIRED !!!'});
+    if (!widget.isStealth) _tts.speak("Contact! Shots fired!");
     Future.delayed(const Duration(seconds: 2), () {
       if(mounted) setState(() => _isGunshotDetected = false);
     });
-    _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': '!!! SHOTS FIRED !!!'});
-    if (!widget.isStealth) _tts.speak("Contact! Shots fired!");
   }
 
   void _openBioScanner() {
@@ -200,7 +224,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
 
   void _openAR() {
     if (!_hasFix) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("WAITING FOR GPS...")));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("WAITING FOR POSITION FIX...")));
       return;
     }
     Navigator.push(context, MaterialPageRoute(builder: (c) => ArCompassView(waypoints: _waypoints, myLocation: _myLocation)));
@@ -247,13 +271,18 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     if (!serviceEnabled) return;
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) { permission = await Geolocator.requestPermission(); if (permission == LocationPermission.denied) return; }
-    Geolocator.getPositionStream(locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 5)).listen((Position position) {
+
+    const LocationSettings locationSettings = LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 2);
+
+    Geolocator.getPositionStream(locationSettings: locationSettings).listen((Position position) {
       if (mounted) {
         setState(() {
           _myLocation = LatLng(position.latitude, position.longitude);
           _hasFix = true;
+
           if (_temp == 0.0) _fetchRealWeather();
         });
+
         if (_dangerZone.isNotEmpty) {
           bool currentlyInDanger = _isPointInside(_myLocation, _dangerZone);
           if (currentlyInDanger && !_isInDanger && !widget.isStealth) _tts.speak("WARNING! Restricted Zone!");
@@ -291,7 +320,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       _incomingBuffer = [];
       _socket!.listen((data) => _handleIncomingPacket(data), onDone: () { if (mounted) setState(() { _status = "CONNECTION LOST"; _socket = null; }); if (!widget.isStealth) _tts.speak("Connection Lost"); }, onError: (e) { if (mounted) setState(() { _status = "ERROR: $e"; _socket = null; }); });
       _heartbeatTimer?.cancel();
-      // HARDENING: Send heartbeat every 1 second
       _heartbeatTimer = Timer.periodic(const Duration(seconds: 1), (timer) => _sendHeartbeat());
     } catch (e) { if (mounted) setState(() { _status = "FAILED TO CONNECT"; _socket = null; }); }
   }
@@ -311,7 +339,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   }
 
   void _processMessage(Map<String, dynamic> json) {
-    // --- KILL SWITCH ---
     if (json['type'] == 'KILL' && json['target'] == _idController.text.toUpperCase()) {
       _executeSelfDestruct();
       return;
@@ -344,7 +371,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     }
   }
 
-  // --- HARDENING: KILL SWITCH ---
   Future<void> _executeSelfDestruct() async {
     _socket?.destroy();
     if (!mounted) exit(0);
@@ -382,7 +408,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       _pendingOrder = msg;
     });
     if (!widget.isStealth) {
-      // FIX: Clean symbols to prevent TTS reading "Greater Than"
       String speech = msg['content'].replaceAll(RegExp(r'[^\w\s\.]'), '');
       _tts.speak(speech);
     }
@@ -394,8 +419,22 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       int bat = await _battery.batteryLevel;
       String state = _sosController.isAnimating ? "SOS" : "ACTIVE";
       if (_isInDanger) state = "DANGER";
-      // INCLUDE BP and TEMP
-      _sendPacket({'type': 'STATUS', 'id': _idController.text.toUpperCase(), 'role': _selectedRole, 'lat': _myLocation.latitude, 'lng': _myLocation.longitude, 'head': _heading, 'bat': bat, 'state': state, 'bpm': _heartRate, 'spo2': _spO2, 'bp': _bp, 'temp': _temp});
+      _sendPacket({
+        'type': 'STATUS',
+        'id': _idController.text.toUpperCase(),
+        'role': _selectedRole,
+        'lat': _myLocation.latitude,
+        'lng': _myLocation.longitude,
+        'head': _heading,
+        'bat': bat,
+        'state': state,
+        'bpm': _heartRate,
+        'spo2': _spO2,
+        'bp': _bp,
+        'temp': _temp,
+        'heat': _isHeatStress,
+        'dr': false // ALWAYS FALSE NOW
+      });
     } catch (e) {}
   }
 
@@ -519,21 +558,17 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
             ),
           ),
 
-          // VISUAL EFFECTS
-          CrosshairOverlay(color: primaryColor), // HUD VISOR LOOK
-          const CrtOverlay(), // SCANLINES
+          CrosshairOverlay(color: primaryColor),
+          const CrtOverlay(),
 
-          // GUNSHOT FLASH
           if (_isGunshotDetected) Container(color: kSciFiRed.withOpacity(0.5)),
 
           if (isSOS) AnimatedBuilder(animation: _sosController, builder: (ctx, ch) => Container(color: kSciFiRed.withOpacity(0.3 * _sosController.value))),
           if (_isInDanger) Container(decoration: BoxDecoration(border: Border.all(color: kSciFiRed, width: 10))),
 
-          // UI LAYER
           SafeArea(
             child: Column(
               children: [
-                // TOP STATUS PANEL
                 Padding(
                   padding: const EdgeInsets.all(8.0),
                   child: SciFiPanel(
@@ -544,6 +579,12 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
                         Text("UPLINK: $_status", style: TextStyle(color: _socket != null ? primaryColor : kSciFiRed, fontWeight: FontWeight.bold, fontFamily: 'Courier', fontSize: 10)),
                         IconButton(icon: Icon(widget.isStealth ? Icons.visibility_off : Icons.visibility, color: primaryColor, size: 18), onPressed: widget.onToggleStealth)
                       ]),
+
+                      if (_isHeatStress)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4.0),
+                          child: Text("⚠ HEAT STRESS WARNING", style: TextStyle(color: kSciFiRed, fontWeight: FontWeight.bold, fontSize: 12, backgroundColor: Colors.black54)),
+                        ),
 
                       if (_socket == null) ...[
                         const SizedBox(height: 8),
@@ -563,7 +604,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
                   ),
                 ),
 
-                // INCOMING ORDERS
                 if (_pendingOrder != null)
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 8.0),
@@ -580,7 +620,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
 
                 const Spacer(),
 
-                // BOTTOM CONTROLS
                 Padding(
                   padding: const EdgeInsets.all(8.0),
                   child: SciFiPanel(
