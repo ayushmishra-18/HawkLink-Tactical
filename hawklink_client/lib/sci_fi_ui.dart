@@ -224,34 +224,43 @@ class SciFiCompass extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Width and height of the whole compass widget
+    const double compassSize = 140;
+
     return SizedBox(
-      width: 140,
-      height: 140,
+      width: compassSize,
+      height: compassSize,
       child: Stack(
         alignment: Alignment.center,
         children: [
+          // 1. Outer Ring with Directions (Custom Painted)
           IgnorePointer(
             child: CustomPaint(
-              size: const Size(120, 120),
+              size: const Size(compassSize, compassSize),
               painter: _CompassPainter(color: color),
             ),
           ),
-          Positioned(top: 0, child: _DirBtn("N", () => onRotate(0))),
-          Positioned(right: 0, child: _DirBtn("E", () => onRotate(90))),
-          Positioned(bottom: 0, child: _DirBtn("S", () => onRotate(180))),
-          Positioned(left: 0, child: _DirBtn("W", () => onRotate(270))),
 
-          // Split Center Buttons - POSITIONED MUCH HIGHER
-          Positioned(
-            top: 20,
+          // 2. Direction Buttons (Invisible touch targets roughly at edges)
+          // Positioned precisely at 0, 90, 180, 270 degrees
+          Align(alignment: Alignment.topCenter, child: _DirBtn("N", () => onRotate(0))),
+          Align(alignment: Alignment.centerRight, child: _DirBtn("E", () => onRotate(90))),
+          Align(alignment: Alignment.bottomCenter, child: _DirBtn("S", () => onRotate(180))),
+          Align(alignment: Alignment.centerLeft, child: _DirBtn("W", () => onRotate(270))),
+
+          // 3. Center Control Buttons (Recenter & Reset North)
+          // Using a Row in the exact center of the stack
+          Center(
             child: Row(
               mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
+                // Location Recenter (Left)
                 GestureDetector(
                   onTap: onRecenterLocation,
                   child: Container(
                     width: 36, height: 36,
-                    margin: const EdgeInsets.only(right: 4),
+                    margin: const EdgeInsets.only(right: 6), // Spacing between buttons
                     decoration: BoxDecoration(
                         color: color.withOpacity(0.1),
                         border: Border.all(color: color),
@@ -261,18 +270,20 @@ class SciFiCompass extends StatelessWidget {
                     child: Icon(Icons.my_location, color: color, size: 18),
                   ),
                 ),
+
+                // Reset North (Right)
                 GestureDetector(
                   onTap: onResetNorth,
                   child: Container(
                     width: 36, height: 36,
-                    margin: const EdgeInsets.only(left: 4),
+                    margin: const EdgeInsets.only(left: 6), // Spacing between buttons
                     decoration: BoxDecoration(
                         color: color.withOpacity(0.1),
                         border: Border.all(color: color),
                         shape: BoxShape.circle,
                         boxShadow: [BoxShadow(color: color.withOpacity(0.2), blurRadius: 10)]
                     ),
-                    child: Icon(Icons.navigation, color: color, size: 18),
+                    child: Icon(Icons.explore, color: color, size: 18), // Use Explore icon for North
                   ),
                 ),
               ],
@@ -304,15 +315,31 @@ class _CompassPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final paint = Paint()..color = color.withOpacity(0.3)..style = PaintingStyle.stroke..strokeWidth = 1;
     final center = Offset(size.width/2, size.height/2);
-    final radius = size.width/2 - 5;
+    final radius = size.width/2 - 5; // fit inside size
 
+    // Outer Circle
     canvas.drawCircle(center, radius, paint);
-    canvas.drawCircle(center, radius * 0.7, paint..strokeWidth=0.5);
 
+    // Inner Circle (where buttons sit)
+    canvas.drawCircle(center, radius * 0.65, paint..strokeWidth=0.5);
+
+    // Ticks
     for(int i=0; i<360; i+=45) {
       double angle = i * pi / 180;
+      // Start tick from edge inwards
       double r1 = radius;
-      double r2 = radius - (i % 90 == 0 ? 10 : 5);
+      double r2 = radius - (i % 90 == 0 ? 10 : 5); // Longer ticks for N/E/S/W
+
+      // Rotate -90 degrees because 0 is usually East in trig, but we want 0 to be North for drawing logic if needed,
+      // actually standard Flutter Canvas 0 is right (East). To match N at top (-90 deg),
+      // let's just rely on the rotation logic.
+      // Actually simply:
+      // x = cx + r * cos(a)
+      // y = cy + r * sin(a)
+      // 0 degrees is East. -90 is North.
+      // i=0 -> East. i=90 -> South. i=180 -> West. i=270 -> North.
+      // This matches standard UI orientation usually.
+
       canvas.drawLine(
           Offset(center.dx + r1 * cos(angle), center.dy + r1 * sin(angle)),
           Offset(center.dx + r2 * cos(angle), center.dy + r2 * sin(angle)),
@@ -371,19 +398,48 @@ class _CrosshairPainter extends CustomPainter {
     double cx = size.width/2; double cy = size.height/2;
     double len = 20;
 
+    // Cross
     canvas.drawLine(Offset(cx-len, cy), Offset(cx+len, cy), p);
     canvas.drawLine(Offset(cx, cy-len), Offset(cx, cy+len), p);
 
+    // Corners
     double gap = 30;
     double clen = 10;
+    // TL
     canvas.drawLine(Offset(cx-gap, cy-gap+clen), Offset(cx-gap, cy-gap), p);
     canvas.drawLine(Offset(cx-gap, cy-gap), Offset(cx-gap+clen, cy-gap), p);
+    // TR
     canvas.drawLine(Offset(cx+gap, cy-gap+clen), Offset(cx+gap, cy-gap), p);
     canvas.drawLine(Offset(cx+gap, cy-gap), Offset(cx+gap-clen, cy-gap), p);
+    // BL
     canvas.drawLine(Offset(cx-gap, cy+gap-clen), Offset(cx-gap, cy+gap), p);
     canvas.drawLine(Offset(cx-gap, cy+gap), Offset(cx-gap+clen, cy+gap), p);
+    // BR
     canvas.drawLine(Offset(cx+gap, cy+gap-clen), Offset(cx+gap, cy+gap), p);
     canvas.drawLine(Offset(cx+gap, cy+gap), Offset(cx+gap-clen, cy+gap), p);
+  }
+  @override bool shouldRepaint(old) => false;
+}
+
+class BlinkingText extends StatefulWidget {
+  final String text; final Color color;
+  const BlinkingText(this.text, {super.key, required this.color});
+  @override State<BlinkingText> createState() => _BlinkingTextState();
+}
+
+class _BlinkingTextState extends State<BlinkingText> with SingleTickerProviderStateMixin {
+  late AnimationController _c;
+  @override void initState() { super.initState(); _c = AnimationController(vsync: this, duration: const Duration(seconds: 1))..repeat(reverse: true); }
+  @override void dispose() { _c.dispose(); super.dispose(); }
+  @override Widget build(BuildContext context) => FadeTransition(opacity: _c, child: Text(widget.text, style: TextStyle(color: widget.color, fontWeight: FontWeight.bold, fontSize: 10)));
+}
+
+class TacticalGridPainter extends CustomPainter {
+  @override void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final paint = Paint()..color = kSciFiGreen.withOpacity(0.05)..strokeWidth = 1;
+    for (double x = 0; x < size.width; x += 100) canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+    for (double y = 0; y < size.height; y += 100) canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
   }
   @override bool shouldRepaint(old) => false;
 }

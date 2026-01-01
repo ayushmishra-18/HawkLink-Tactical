@@ -86,7 +86,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   List<TacticalWaypoint> _waypoints = [];
 
   // --- BIO METRICS ---
-  int _heartRate = 0;
+  int _heartRate = 75; // Default resting HR
   int _spO2 = 98;
   int _systolic = 120;
   int _diastolic = 80;
@@ -101,13 +101,13 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   static const int kHighBpmThreshold = 150;
 
   // --- ENVIRONMENT / TERRAIN DATA ---
-  double _envTemp = 25.0;
-  double _envWind = 10.0;
-  String _envCond = 'Clear';
+  double _envTemp = 0.0;
+  double _envWind = 0.0;
+  String _envCond = 'WAITING SYNC';
 
   // --- SENSORS ---
   Timer? _biometricTimer;
-  Timer? _weatherTimer;
+  Timer? _simulationTimer;
 
   final MapController _mapController = MapController();
   LatLng _myLocation = const LatLng(40.7128, -74.0060);
@@ -159,57 +159,38 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
 
     _initAcousticSensor();
 
+    // --- FATIGUE CHECKER ---
     _biometricTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
         setState(() {
-          if (_heartRate > 0) {
-            if (_heartRate > kHighBpmThreshold) {
-              _fatigueAccumulator++;
-            } else {
-              if (_fatigueAccumulator > 0) _fatigueAccumulator--;
-            }
+          if (_heartRate > kHighBpmThreshold) {
+            _fatigueAccumulator++;
+          } else {
+            if (_fatigueAccumulator > 0) _fatigueAccumulator--;
+          }
 
-            if (_fatigueAccumulator >= kFatigueThresholdSeconds && !_isHeatStress) {
-              _isHeatStress = true;
-              if (!widget.isStealth) _tts.speak("Warning. Heat Stress Detected.");
-              _sendPacket({'type': 'HEAT_STRESS', 'sender': _idController.text.toUpperCase(), 'val': true});
-            } else if (_fatigueAccumulator == 0 && _isHeatStress) {
-              _isHeatStress = false;
-            }
+          if (_fatigueAccumulator >= kFatigueThresholdSeconds && !_isHeatStress) {
+            _isHeatStress = true;
+            if (!widget.isStealth) _tts.speak("Warning. Heat Stress Detected.");
+            _sendPacket({'type': 'HEAT_STRESS', 'sender': _idController.text.toUpperCase(), 'val': true});
+          } else if (_fatigueAccumulator == 0 && _isHeatStress) {
+            _isHeatStress = false;
           }
         });
       }
     });
 
-    _weatherTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
-      if (_hasFix) _fetchRealWeather();
-    });
-    Future.delayed(const Duration(seconds: 3), () {
-      if (_hasFix) _fetchRealWeather();
-    });
-  }
-
-  Future<void> _fetchRealWeather() async {
-    try {
-      final url = Uri.parse('https://api.open-meteo.com/v1/forecast?latitude=${_myLocation.latitude}&longitude=${_myLocation.longitude}&current_weather=true');
-      final response = await http.get(url);
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final double tempC = data['current_weather']['temperature'];
-        if (mounted) {
-          setState(() {
-            _temp = (tempC * 9/5) + 32; // Convert to F
-            if (_envCond == 'Clear') {
-              _envTemp = tempC;
-              _envWind = data['current_weather']['windspeed'];
-            }
-          });
-        }
+    // --- VITAL SIGNS SIMULATION ---
+    _simulationTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
+      if (mounted) {
+        setState(() {
+          if (!_isBioActive) {
+            int variance = Random().nextInt(5) - 2;
+            _heartRate = (_heartRate + variance).clamp(60, 180);
+          }
+        });
       }
-    } catch (e) {
-      debugPrint("Weather Error: $e");
-    }
+    });
   }
 
   Future<void> _initAcousticSensor() async {
@@ -281,8 +262,8 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     _socket?.destroy();
     _heartbeatTimer?.cancel();
     _biometricTimer?.cancel();
-    _weatherTimer?.cancel();
     _blackBoxChunkTimer?.cancel();
+    _simulationTimer?.cancel();
     _audioRecorder.dispose();
     _acousticSensor?.stop();
     _sosController.dispose();
@@ -322,8 +303,6 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
         setState(() {
           _myLocation = LatLng(position.latitude, position.longitude);
           _hasFix = true;
-
-          if (_temp == 98.6) _fetchRealWeather();
         });
 
         if (_dangerZone.isNotEmpty) {
@@ -404,12 +383,13 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       setState(() => _isInDanger = true);
       if(!widget.isStealth) _tts.speak("Alert! You are in a restricted area!");
     }
+    // --- UPDATED: RECEIVE TERRAIN FROM COMMANDER ---
     else if (json['type'] == 'TERRAIN') {
       var data = json['data'];
       setState(() {
         _envTemp = (data['temp'] as num).toDouble();
         _envWind = (data['wind'] as num).toDouble();
-        _envCond = data['cond'];
+        _envCond = data['cond'].toString().toUpperCase();
       });
       if (!widget.isStealth) _tts.speak("Environment Update. Condition: $_envCond");
     }
@@ -527,13 +507,16 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
         final bytes = await file.readAsBytes();
         final base64Audio = base64Encode(bytes);
 
-        // --- CRITICAL FIX: Ensure non-null values for metadata ---
-        // Grab current state values locally
-        double lat = _myLocation.latitude;
-        double lng = _myLocation.longitude;
-        int bpm = _heartRate;
-        int spo2 = _spO2;
-        String bp = _bp;
+        // --- DATA SNAPSHOT ---
+        // Ensure values are captured right before sending
+        final double currentLat = _myLocation.latitude;
+        final double currentLng = _myLocation.longitude;
+        final int currentBpm = _heartRate;
+        final int currentSpo2 = _spO2;
+        final String currentBp = _bp;
+
+        // Debug output to verify what we are sending
+        debugPrint("SENDING AUDIO META: Lat:$currentLat Lng:$currentLng BPM:$currentBpm");
 
         // Send packet with EXTRA TELEMETRY
         _sendPacket({
@@ -542,12 +525,12 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
           'content': base64Audio,
           'duration': '10s',
           'timestamp': DateTime.now().toIso8601String(),
-          // NEW FIELDS ADDED HERE with Explicit values
-          'lat': lat,
-          'lng': lng,
-          'bpm': bpm,
-          'spO2': spo2,
-          'bp': bp,
+          // NEW FIELDS with explicit values
+          'lat': currentLat,
+          'lng': currentLng,
+          'bpm': currentBpm,
+          'spO2': currentSpo2,
+          'bp': currentBp,
         });
 
         // Cleanup temp file
@@ -675,10 +658,9 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   }
 
   // --- WGS 84 Formatter ---
-  String _formatCoords(LatLng l) {
-    String latDir = l.latitude >= 0 ? "N" : "S";
-    String lngDir = l.longitude >= 0 ? "E" : "W";
-    return "${l.latitude.abs().toStringAsFixed(5)}° $latDir\n${l.longitude.abs().toStringAsFixed(5)}° $lngDir";
+  String _formatCoord(double v, bool l) {
+    String latDir = l ? (v >= 0 ? "N" : "S") : (v >= 0 ? "E" : "W");
+    return "${v.abs().toStringAsFixed(5)}° $latDir";
   }
 
   // --- ROLE SPECIFIC UI BUILDERS ---
@@ -926,12 +908,47 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
                           IconButton(icon: Icon(widget.isStealth ? Icons.visibility_off : Icons.visibility, color: primaryColor, size: 18), onPressed: widget.onToggleStealth)
                         ]),
 
-                        // --- DISPLAY LOCATION ---
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          child: Text(_formatCoords(_myLocation),
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(color: Colors.white70, fontSize: 12, fontFamily: 'Courier', letterSpacing: 1.0)
+                        // --- NEW: COMBINED LOCATION & WEATHER ROW ---
+                        Container(
+                          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                          margin: const EdgeInsets.symmetric(vertical: 4),
+                          decoration: BoxDecoration(
+                              border: Border.all(color: Colors.white12),
+                              borderRadius: BorderRadius.circular(4),
+                              color: Colors.white.withOpacity(0.05)
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              // Left: Location
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text("LOC: ${_formatCoord(_myLocation.latitude, true)}", style: const TextStyle(color: Colors.white70, fontSize: 10, fontFamily: 'Courier', letterSpacing: 1.0)),
+                                  Text("     ${_formatCoord(_myLocation.longitude, false)}", style: const TextStyle(color: Colors.white70, fontSize: 10, fontFamily: 'Courier', letterSpacing: 1.0)),
+                                ],
+                              ),
+
+                              // Divider
+                              Container(height: 25, width: 1, color: Colors.white24),
+
+                              // Right: Weather (ADJACENT)
+                              Row(children: [
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Row(children: [
+                                      Icon(Icons.thermostat, size: 10, color: Colors.grey),
+                                      Text(" ${_envTemp.toStringAsFixed(0)}°", style: const TextStyle(color: Colors.white, fontSize: 10, fontFamily: 'Orbitron')),
+                                      const SizedBox(width: 4),
+                                      Icon(Icons.air, size: 10, color: Colors.grey),
+                                      Text(" ${_envWind.toStringAsFixed(0)}", style: const TextStyle(color: Colors.white, fontSize: 10, fontFamily: 'Orbitron')),
+                                    ]),
+                                    Text(_envCond, style: TextStyle(color: _envCond == 'Clear' ? kSciFiGreen : Colors.orange, fontSize: 9, fontWeight: FontWeight.bold, fontFamily: 'Orbitron')),
+                                  ],
+                                ),
+                              ]),
+                            ],
                           ),
                         ),
 
@@ -941,24 +958,9 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
                             child: Text("⚠ HEAT STRESS WARNING", style: TextStyle(color: kSciFiRed, fontWeight: FontWeight.bold, fontSize: 12, backgroundColor: Colors.black54)),
                           ),
 
-                        // --- TERRAIN INFO PANEL ---
-                        Container(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.thermostat, size: 12, color: Colors.grey),
-                              Text(" ${_envTemp.toStringAsFixed(0)}°C ", style: const TextStyle(color: Colors.white, fontSize: 10)),
-                              const SizedBox(width: 8),
-                              Icon(Icons.air, size: 12, color: Colors.grey),
-                              Text(" ${_envWind.toStringAsFixed(0)} km/h ", style: const TextStyle(color: Colors.white, fontSize: 10)),
-                              const SizedBox(width: 8),
-                              Text(_envCond.toUpperCase(), style: TextStyle(color: _envCond == 'Clear' ? kSciFiGreen : Colors.orange, fontSize: 10)),
-                            ],
-                          ),
-                        ),
+                        const Divider(color: Colors.white12, height: 16),
 
-                        // --- ROLE SPECIFIC UI WIDGET ---
+                        // --- NEW: ROLE SPECIFIC UI BELOW ---
                         _buildRoleSpecificUI(),
 
                         // --- WAYPOINT HUD ---
@@ -1195,11 +1197,11 @@ class EkgPainter extends CustomPainter {
   EkgPainter({required this.animationValue, required this.color});
   @override void paint(Canvas canvas, Size size) {
     final paint = Paint()..color = color..strokeWidth = 1.5..style = PaintingStyle.stroke;
-    final path = Path(); // Using dart:ui Path
+    final path = Path();
     final width = size.width; final height = size.height; final mid = height / 2;
     for (double x = 0; x <= width; x++) {
       double offset = (x / width) + animationValue;
-      double y = mid + sin(offset * pi * 10) * (height / 3); // Using direct math functions
+      double y = mid + sin(offset * pi * 10) * (height / 3);
       if ((offset * 5) % 1 > 0.9) { y -= height / 2; }
       if (x == 0) path.moveTo(x, y); else path.lineTo(x, y);
     }
