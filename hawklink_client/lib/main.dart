@@ -4,24 +4,27 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
+import 'dart:math'; // Imports sin, cos, pi directly
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:encrypt/encrypt.dart' as enc;
 import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
+import 'package:latlong2/latlong.dart' hide Path; // FIX: Hide Path to avoid conflict with dart:ui
 import 'package:intl/intl.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:http/http.dart' as http;
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:record/record.dart'; // v5.2.0 uses AudioRecorder
+import 'package:path_provider/path_provider.dart';
 import 'sci_fi_ui.dart';
 import 'heart_rate_scanner.dart';
 import 'ar_compass.dart';
 import 'acoustic_sensor.dart';
 import 'models.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 // --- CONFIGURATION ---
 const int kPort = 4444;
@@ -82,7 +85,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   LatLng? _commanderObjective;
   List<TacticalWaypoint> _waypoints = [];
 
-  // --- BIO METRICS (DEFAULTS) ---
+  // --- BIO METRICS ---
   int _heartRate = 0;
   int _spO2 = 98;
   int _systolic = 120;
@@ -96,6 +99,11 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   bool _isHeatStress = false;
   static const int kFatigueThresholdSeconds = 10;
   static const int kHighBpmThreshold = 150;
+
+  // --- ENVIRONMENT / TERRAIN DATA ---
+  double _envTemp = 25.0;
+  double _envWind = 10.0;
+  String _envCond = 'Clear';
 
   // --- SENSORS ---
   Timer? _biometricTimer;
@@ -118,12 +126,28 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
 
   AcousticSensor? _acousticSensor;
   bool _isGunshotDetected = false;
+  bool _isMicPermissionGranted = false;
+
+  // --- BLACK BOX RECORDER VARS (v5 API) ---
+  final AudioRecorder _audioRecorder = AudioRecorder(); // Uses v5 API class
+  bool _isBlackBoxActive = false;
+  Timer? _blackBoxChunkTimer;
+  int _blackBoxRecordingTime = 0;
 
   // Distance Calc
   final Distance _distanceCalc = const Distance();
 
-  // Mobile Scanner Controller
-  // MobileScannerController cameraController = MobileScannerController(); // Removed to avoid lifecycle issues
+  // Mobile Scanner
+  bool _isScanProcessing = false;
+
+  // --- ROLE SPECIFIC STATE ---
+  int _ammoCount = 30; // Assault
+  int _magCount = 4;   // Assault
+  Timer? _demoTimer;   // Engineer
+  int _demoSeconds = 0; // Engineer
+
+  // --- UI STATE ---
+  bool _isTopPanelVisible = true;
 
   @override
   void initState() {
@@ -132,6 +156,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     _startGpsTracking();
     _startCompass();
     _initTts();
+
     _initAcousticSensor();
 
     _biometricTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -175,6 +200,10 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
         if (mounted) {
           setState(() {
             _temp = (tempC * 9/5) + 32; // Convert to F
+            if (_envCond == 'Clear') {
+              _envTemp = tempC;
+              _envWind = data['current_weather']['windspeed'];
+            }
           });
         }
       }
@@ -183,12 +212,21 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     }
   }
 
-  void _initAcousticSensor() {
-    _acousticSensor = AcousticSensor(onGunshotDetected: _handleGunshot);
-    _acousticSensor?.start();
+  Future<void> _initAcousticSensor() async {
+    var status = await Permission.microphone.status;
+    if (!status.isGranted) {
+      status = await Permission.microphone.request();
+    }
+
+    if (status.isGranted) {
+      _acousticSensor = AcousticSensor(onGunshotDetected: _handleGunshot);
+      await _acousticSensor?.start();
+      if(mounted) setState(() => _isMicPermissionGranted = true);
+    }
   }
 
   void _handleGunshot() {
+    if (!mounted) return;
     setState(() => _isGunshotDetected = true);
     _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': '!!! SHOTS FIRED !!!'});
     if (!widget.isStealth) _tts.speak("Contact! Shots fired!");
@@ -244,9 +282,11 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     _heartbeatTimer?.cancel();
     _biometricTimer?.cancel();
     _weatherTimer?.cancel();
+    _blackBoxChunkTimer?.cancel();
+    _audioRecorder.dispose();
     _acousticSensor?.stop();
     _sosController.dispose();
-    // cameraController.dispose(); // Removed
+    _demoTimer?.cancel();
     _tts.stop();
     super.dispose();
   }
@@ -364,6 +404,15 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       setState(() => _isInDanger = true);
       if(!widget.isStealth) _tts.speak("Alert! You are in a restricted area!");
     }
+    else if (json['type'] == 'TERRAIN') {
+      var data = json['data'];
+      setState(() {
+        _envTemp = (data['temp'] as num).toDouble();
+        _envWind = (data['wind'] as num).toDouble();
+        _envCond = data['cond'];
+      });
+      if (!widget.isStealth) _tts.speak("Environment Update. Condition: $_envCond");
+    }
     else if (json['type'] == 'WAYPOINT') {
       if (json['action'] == 'ADD') {
         var data = json['data'];
@@ -414,6 +463,104 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     );
     await Future.delayed(const Duration(seconds: 3));
     exit(0);
+  }
+
+  void _triggerBurnBag() {
+    _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': '!!! TRIGGERING BURN BAG !!!'});
+    _socket?.destroy();
+    showDialog(context: context, barrierDismissible: false, builder: (c) => Container(color: Colors.black, child: const Center(child: Text("WIPING DATA...", style: TextStyle(color: Colors.red, fontSize: 30, decoration: TextDecoration.none)))));
+    Future.delayed(const Duration(seconds: 2), () => exit(0));
+  }
+
+  // --- BLACK BOX LOGIC (v5 API) ---
+  Future<void> _triggerBlackBox() async {
+    if (_isBlackBoxActive) {
+      // STOP Recording
+      _blackBoxChunkTimer?.cancel();
+      await _stopAndSendChunk();
+      setState(() {
+        _isBlackBoxActive = false;
+        _blackBoxRecordingTime = 0;
+      });
+      if (!widget.isStealth) _tts.speak("Black Box Deactivated");
+      _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': 'BLACK BOX: HALTED'});
+    } else {
+      // START Recording
+      if (await _audioRecorder.hasPermission()) {
+        setState(() {
+          _isBlackBoxActive = true;
+          _blackBoxRecordingTime = 0;
+        });
+        if (!widget.isStealth) _tts.speak("Black Box Recording");
+        _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': 'BLACK BOX: RECORDING STARTED'});
+
+        // Start first chunk
+        await _startRecordingChunk();
+
+        // Timer to cycle chunks every 10 seconds
+        _blackBoxChunkTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
+          setState(() => _blackBoxRecordingTime += 10);
+          _cycleRecordingChunk();
+        });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("MIC PERMISSION DENIED")));
+      }
+    }
+  }
+
+  Future<void> _startRecordingChunk() async {
+    final dir = await getTemporaryDirectory();
+    String filePath = '${dir.path}/blackbox_${DateTime.now().millisecondsSinceEpoch}.m4a';
+
+    // v5 API - Using RecordConfig
+    const config = RecordConfig(encoder: AudioEncoder.aacLc);
+    await _audioRecorder.start(config, path: filePath);
+  }
+
+  Future<void> _stopAndSendChunk() async {
+    // v5 API returns path on stop
+    final path = await _audioRecorder.stop();
+
+    if (path != null) {
+      final file = File(path);
+      if (await file.exists()) {
+        final bytes = await file.readAsBytes();
+        final base64Audio = base64Encode(bytes);
+
+        // --- CRITICAL FIX: Ensure non-null values for metadata ---
+        // Grab current state values locally
+        double lat = _myLocation.latitude;
+        double lng = _myLocation.longitude;
+        int bpm = _heartRate;
+        int spo2 = _spO2;
+        String bp = _bp;
+
+        // Send packet with EXTRA TELEMETRY
+        _sendPacket({
+          'type': 'INTEL_AUDIO',
+          'sender': _idController.text.toUpperCase(),
+          'content': base64Audio,
+          'duration': '10s',
+          'timestamp': DateTime.now().toIso8601String(),
+          // NEW FIELDS ADDED HERE with Explicit values
+          'lat': lat,
+          'lng': lng,
+          'bpm': bpm,
+          'spO2': spo2,
+          'bp': bp,
+        });
+
+        // Cleanup temp file
+        await file.delete();
+      }
+    }
+  }
+
+  Future<void> _cycleRecordingChunk() async {
+    await _stopAndSendChunk();
+    if (_isBlackBoxActive) {
+      await _startRecordingChunk();
+    }
   }
 
   void _onMessageReceived(Map<String, dynamic> msg) {
@@ -534,34 +681,164 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     return "${l.latitude.abs().toStringAsFixed(5)}° $latDir\n${l.longitude.abs().toStringAsFixed(5)}° $lngDir";
   }
 
+  // --- ROLE SPECIFIC UI BUILDERS ---
+
+  Widget _buildSniperCard() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(color: Colors.black54, border: Border.all(color: Colors.orange), borderRadius: BorderRadius.circular(4)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text("BALLISTICS COMPUTER", style: TextStyle(color: Colors.orange, fontSize: 10, fontFamily: 'Orbitron')),
+        const SizedBox(height: 4),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text("WIND: ${_envWind.toStringAsFixed(1)} km/h", style: const TextStyle(color: Colors.white, fontSize: 12, fontFamily: 'Courier')),
+          Text("ADJ: ${(_envWind * 0.1).toStringAsFixed(2)} MIL", style: const TextStyle(color: kSciFiCyan, fontSize: 12, fontWeight: FontWeight.bold, fontFamily: 'Courier')),
+        ]),
+        const Text("TEMP CORR: OK", style: TextStyle(color: kSciFiGreen, fontSize: 10)),
+      ]),
+    );
+  }
+
+  Widget _buildAssaultUI() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(color: Colors.black54, border: Border.all(color: Colors.redAccent), borderRadius: BorderRadius.circular(4)),
+      child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text("AMMO COUNT", style: TextStyle(color: Colors.redAccent, fontSize: 10, fontFamily: 'Orbitron')),
+          Row(children: [
+            Text("$_ammoCount", style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+            const Text("/30", style: TextStyle(color: Colors.grey, fontSize: 12)),
+          ]),
+          Text("MAGS: $_magCount", style: const TextStyle(color: Colors.white, fontSize: 12)),
+        ]),
+        Column(children: [
+          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.red.withOpacity(0.3)), onPressed: () => setState(() { if(_ammoCount > 0) _ammoCount--; else if (_magCount > 0) {_magCount--; _ammoCount=30;} }), child: const Text("FIRE")),
+          const SizedBox(height: 4),
+          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.blue.withOpacity(0.3)), onPressed: () => setState(() { if (_magCount > 0) {_magCount--; _ammoCount=30;} }), child: const Text("RELOAD")),
+        ])
+      ]),
+    );
+  }
+
+  Widget _buildMedicUI() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(color: Colors.black54, border: Border.all(color: kSciFiGreen), borderRadius: BorderRadius.circular(4)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text("SQUAD VITALS (SIM)", style: TextStyle(color: kSciFiGreen, fontSize: 10, fontFamily: 'Orbitron')),
+        const SizedBox(height: 4),
+        _buildSquadMemberStatus("ALPHA-1 (YOU)", _heartRate, 100),
+        _buildSquadMemberStatus("BRAVO-6", 88, 92),
+        _buildSquadMemberStatus("CHARLIE-2", 110, 45),
+      ]),
+    );
+  }
+
+  Widget _buildSquadMemberStatus(String id, int hr, int hp) {
+    Color c = hp > 80 ? kSciFiGreen : (hp > 40 ? Colors.orange : Colors.red);
+    return Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: Row(children: [
+      Text(id, style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+      const Spacer(),
+      Text("HR: $hr", style: TextStyle(color: c, fontSize: 12)),
+      const SizedBox(width: 8),
+      Text("HP: $hp%", style: TextStyle(color: c, fontSize: 12)),
+    ]));
+  }
+
+  Widget _buildScoutUI() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(color: Colors.black54, border: Border.all(color: Colors.blue), borderRadius: BorderRadius.circular(4)),
+      child: Column(children: [
+        const Text("QUICK MARK", style: TextStyle(color: Colors.blue, fontSize: 10, fontFamily: 'Orbitron')),
+        const SizedBox(height: 4),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
+          _buildQuickMarkBtn("INFANTRY", Icons.directions_walk),
+          _buildQuickMarkBtn("VEHICLE", Icons.directions_car),
+          _buildQuickMarkBtn("TRAP", Icons.warning),
+        ]),
+      ]),
+    );
+  }
+
+  Widget _buildQuickMarkBtn(String label, IconData icon) {
+    return InkWell(
+      onTap: () {
+        _sendPacket({'type': 'CHAT', 'sender': _idController.text, 'content': 'SPOTREP: $label at current pos'});
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("MARKED $label")));
+      },
+      child: Column(children: [
+        Icon(icon, color: Colors.blue, size: 20),
+        Text(label, style: const TextStyle(color: Colors.white, fontSize: 10))
+      ]),
+    );
+  }
+
+  Widget _buildEngineerUI() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(color: Colors.black54, border: Border.all(color: Colors.orangeAccent), borderRadius: BorderRadius.circular(4)),
+      child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text("DEMO TIMER", style: TextStyle(color: Colors.orangeAccent, fontSize: 10, fontFamily: 'Orbitron')),
+          Text("T-${_demoSeconds}s", style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+        ]),
+        Column(children: [
+          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.red.withOpacity(0.3)), onPressed: () { setState(() => _demoSeconds = 60); _demoTimer?.cancel(); _demoTimer = Timer.periodic(const Duration(seconds: 1), (t) { setState(() { if(_demoSeconds > 0) _demoSeconds--; else t.cancel(); }); }); }, child: const Text("SET 60s")),
+          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.grey.withOpacity(0.3)), onPressed: () { _demoTimer?.cancel(); setState(() => _demoSeconds = 0); }, child: const Text("ABORT")),
+        ])
+      ]),
+    );
+  }
+
+  Widget _buildRoleSpecificUI() {
+    switch (_selectedRole) {
+      case "ASSAULT": return _buildAssaultUI();
+      case "MEDIC": return _buildMedicUI();
+      case "SCOUT": return _buildScoutUI();
+      case "SNIPER": return _buildSniperCard();
+      case "ENGINEER": return _buildEngineerUI();
+      default: return const SizedBox.shrink();
+    }
+  }
+
   // --- QR CODE SCANNER (QUICK JOIN) ---
   void _openQRScanner() {
-    // Navigate to full-screen scanner
+    _isScanProcessing = false;
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => Scaffold(
           appBar: AppBar(title: const Text("SCAN UPLINK QR"), backgroundColor: Colors.black),
           body: MobileScanner(
-            // Removed controller declaration here to simplify state management
+            controller: MobileScannerController(
+              detectionSpeed: DetectionSpeed.noDuplicates,
+            ),
             onDetect: (capture) {
+              if (_isScanProcessing) return;
+
               final List<Barcode> barcodes = capture.barcodes;
               for (final barcode in barcodes) {
                 if (barcode.rawValue != null) {
-                  // Expected Format: "IP|KEY" (e.g. "192.168.1.5|HAWKLINK...")
                   final parts = barcode.rawValue!.split('|');
                   if (parts.length >= 1) {
-                    if (context.mounted) {
-                      setState(() {
-                        _ipController.text = parts[0];
-                      });
-                      // Use root navigator to ensure we pop correctly
-                      Navigator.of(context).pop();
-
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("QR SCANNED: CONNECTING...")));
-                      // Delay connection slightly to allow UI to settle
-                      Future.delayed(Duration(milliseconds: 300), _connect);
-                    }
-                    return; // Stop after first valid scan
+                    _isScanProcessing = true;
+                    Future.delayed(Duration(milliseconds: 100), () {
+                      if (context.mounted) {
+                        setState(() {
+                          _ipController.text = parts[0];
+                        });
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("QR SCANNED: CONNECTING...")));
+                        _connect();
+                      }
+                    });
+                    return;
                   }
                 }
               }
@@ -626,111 +903,238 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
           if (isSOS) AnimatedBuilder(animation: _sosController, builder: (ctx, ch) => Container(color: kSciFiRed.withOpacity(0.3 * _sosController.value))),
           if (_isInDanger) Container(decoration: BoxDecoration(border: Border.all(color: kSciFiRed, width: 10))),
 
+          // --- SLIDING TOP PANEL ---
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 400),
+            curve: Curves.fastOutSlowIn, // Smoother slide
+            top: _isTopPanelVisible ? 0 : -220, // Adjusted height
+            left: 0,
+            right: 0,
+            child: SafeArea(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // THE PANEL ITSELF
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 0),
+                    child: SciFiPanel(
+                      showBg: true,
+                      borderColor: isSOS ? kSciFiRed : primaryColor,
+                      child: Column(children: [
+                        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                          Text("UPLINK: $_status", style: TextStyle(color: _socket != null ? primaryColor : kSciFiRed, fontWeight: FontWeight.bold, fontFamily: 'Courier', fontSize: 10)),
+                          IconButton(icon: Icon(widget.isStealth ? Icons.visibility_off : Icons.visibility, color: primaryColor, size: 18), onPressed: widget.onToggleStealth)
+                        ]),
+
+                        // --- DISPLAY LOCATION ---
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Text(_formatCoords(_myLocation),
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.white70, fontSize: 12, fontFamily: 'Courier', letterSpacing: 1.0)
+                          ),
+                        ),
+
+                        if (_isHeatStress)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4.0),
+                            child: Text("⚠ HEAT STRESS WARNING", style: TextStyle(color: kSciFiRed, fontWeight: FontWeight.bold, fontSize: 12, backgroundColor: Colors.black54)),
+                          ),
+
+                        // --- TERRAIN INFO PANEL ---
+                        Container(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.thermostat, size: 12, color: Colors.grey),
+                              Text(" ${_envTemp.toStringAsFixed(0)}°C ", style: const TextStyle(color: Colors.white, fontSize: 10)),
+                              const SizedBox(width: 8),
+                              Icon(Icons.air, size: 12, color: Colors.grey),
+                              Text(" ${_envWind.toStringAsFixed(0)} km/h ", style: const TextStyle(color: Colors.white, fontSize: 10)),
+                              const SizedBox(width: 8),
+                              Text(_envCond.toUpperCase(), style: TextStyle(color: _envCond == 'Clear' ? kSciFiGreen : Colors.orange, fontSize: 10)),
+                            ],
+                          ),
+                        ),
+
+                        // --- ROLE SPECIFIC UI WIDGET ---
+                        _buildRoleSpecificUI(),
+
+                        // --- WAYPOINT HUD ---
+                        if (_waypoints.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4.0),
+                            child: SizedBox(
+                              height: 30,
+                              child: ListView(
+                                scrollDirection: Axis.horizontal,
+                                children: _waypoints.map((wp) {
+                                  int dist = _distanceCalc.as(LengthUnit.Meter, _myLocation, wp.location).toInt();
+                                  return Container(
+                                    margin: const EdgeInsets.only(right: 8),
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                        color: _getWaypointColor(wp.type).withOpacity(0.2),
+                                        border: Border.all(color: _getWaypointColor(wp.type)),
+                                        borderRadius: BorderRadius.circular(2)
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Icon(_getWaypointIcon(wp.type), color: _getWaypointColor(wp.type), size: 10),
+                                        const SizedBox(width: 4),
+                                        Text("${wp.type}: ${dist}m", style: const TextStyle(color: Colors.white, fontSize: 10, fontFamily: 'Orbitron'))
+                                      ],
+                                    ),
+                                  );
+                                }).toList(),
+                              ),
+                            ),
+                          ),
+
+                        if (_socket == null) ...[
+                          const SizedBox(height: 8),
+                          Row(children: [
+                            Expanded(flex: 1, child: Container(height: 35, padding: const EdgeInsets.symmetric(horizontal: 8), decoration: BoxDecoration(color: kSciFiDarkBlue, border: Border.all(color: primaryColor)), child: TextField(controller: _idController, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier', fontSize: 12), decoration: const InputDecoration(border: InputBorder.none, hintText: "CALLSIGN")))),
+                            const SizedBox(width: 8),
+                            Expanded(flex: 2, child: Container(height: 35, padding: const EdgeInsets.symmetric(horizontal: 8), decoration: BoxDecoration(color: kSciFiDarkBlue, border: Border.all(color: primaryColor)), child: DropdownButtonFormField<String>(value: _selectedRole, dropdownColor: kSciFiBlack, decoration: const InputDecoration(border: InputBorder.none), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier', fontSize: 12), items: _roles.map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(), onChanged: (v) => setState(() => _selectedRole = v!)))),
+                          ]),
+                          const SizedBox(height: 8),
+                          // --- UPDATED ROW WITH QR SCANNER BUTTON ---
+                          Row(children: [
+                            Expanded(child: Container(height: 35, padding: const EdgeInsets.symmetric(horizontal: 8), decoration: BoxDecoration(color: kSciFiDarkBlue, border: Border.all(color: primaryColor)), child: TextField(controller: _ipController, style: const TextStyle(color: Colors.white, fontFamily: 'Courier', fontSize: 12), decoration: const InputDecoration(border: InputBorder.none, hintText: "COMMAND IP")))),
+                            IconButton(
+                                icon: Icon(Icons.qr_code_scanner, color: kSciFiCyan, size: 20),
+                                onPressed: _openQRScanner
+                            ),
+                            SciFiButton(label: "LINK", icon: Icons.link, color: primaryColor, onTap: _connect, isCompact: true)
+                          ])
+                        ]
+                        else Padding(padding: const EdgeInsets.only(top: 8), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                          Text("ID: ${_idController.text.toUpperCase()}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier', fontSize: 14)),
+                          IconButton(icon: const Icon(Icons.link_off, color: kSciFiRed, size: 20), onPressed: _disconnect)
+                        ]))
+                      ]),
+                    ),
+                  ),
+
+                  // THE HANDLE / TAB
+                  GestureDetector(
+                    onTap: () => setState(() => _isTopPanelVisible = !_isTopPanelVisible),
+                    child: Container(
+                      width: 100, height: 25,
+                      decoration: BoxDecoration(
+                          color: kSciFiDarkBlue.withOpacity(0.9),
+                          border: Border(
+                            bottom: BorderSide(color: primaryColor),
+                            left: BorderSide(color: primaryColor),
+                            right: BorderSide(color: primaryColor),
+                          ),
+                          borderRadius: const BorderRadius.only(bottomLeft: Radius.circular(12), bottomRight: Radius.circular(12))
+                      ),
+                      child: Icon(_isTopPanelVisible ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down, color: primaryColor, size: 20),
+                    ),
+                  ),
+
+                  if (_pendingOrder != null)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 8.0),
+                      child: SciFiPanel(
+                        borderColor: widget.isStealth ? kSciFiRed : kSciFiGreen,
+                        title: "INCOMING ORDER // ${_pendingOrder!['sender']}",
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(_pendingOrder!['content'], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16, fontFamily: 'Courier')),
+                          const SizedBox(height: 8),
+                          SciFiButton(label: "ACKNOWLEDGE", icon: Icons.check_circle, color: Colors.white, onTap: _acknowledgeOrder)
+                        ]),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+
+          // --- COMPASS & RECENTER BUTTON (BOTTOM RIGHT) ---
+          Positioned(
+              bottom: 300,
+              right: 16,
+              child: SciFiCompass(
+                color: primaryColor,
+                onRecenterLocation: () {
+                  if (_hasFix) {
+                    _mapController.move(_myLocation, 17);
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("CENTERED"), duration: Duration(milliseconds: 500)));
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("WAITING FOR GPS FIX...")));
+                  }
+                },
+                onResetNorth: () {
+                  _mapController.rotate(0.0);
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("NORTH RESET"), duration: Duration(milliseconds: 500)));
+                },
+                onRotate: (angle) {
+                  _mapController.rotate(angle);
+                },
+              )
+          ),
+
+          // --- UI BUTTONS (BOTTOM) ---
           SafeArea(
             child: Column(
               children: [
-                Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: SciFiPanel(
-                    showBg: true,
-                    borderColor: isSOS ? kSciFiRed : primaryColor,
-                    child: Column(children: [
-                      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                        Text("UPLINK: $_status", style: TextStyle(color: _socket != null ? primaryColor : kSciFiRed, fontWeight: FontWeight.bold, fontFamily: 'Courier', fontSize: 10)),
-                        IconButton(icon: Icon(widget.isStealth ? Icons.visibility_off : Icons.visibility, color: primaryColor, size: 18), onPressed: widget.onToggleStealth)
-                      ]),
+                const Spacer(),
 
-                      // --- NEW: DISPLAY LOCATION ---
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: Text(_formatCoords(_myLocation),
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(color: Colors.white70, fontSize: 12, fontFamily: 'Courier', letterSpacing: 1.0)
-                        ),
-                      ),
-
-                      if (_isHeatStress)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 4.0),
-                          child: Text("⚠ HEAT STRESS WARNING", style: TextStyle(color: kSciFiRed, fontWeight: FontWeight.bold, fontSize: 12, backgroundColor: Colors.black54)),
-                        ),
-
-                      if (_socket == null) ...[
-                        const SizedBox(height: 8),
-                        Row(children: [
-                          Expanded(flex: 1, child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 8), decoration: BoxDecoration(color: kSciFiDarkBlue, border: Border.all(color: primaryColor)), child: TextField(controller: _idController, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier'), decoration: const InputDecoration(border: InputBorder.none, hintText: "CALLSIGN")))),
-                          const SizedBox(width: 8),
-                          Expanded(flex: 2, child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 8), decoration: BoxDecoration(color: kSciFiDarkBlue, border: Border.all(color: primaryColor)), child: DropdownButtonFormField<String>(value: _selectedRole, dropdownColor: kSciFiBlack, decoration: const InputDecoration(border: InputBorder.none), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier'), items: _roles.map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(), onChanged: (v) => setState(() => _selectedRole = v!)))),
-                        ]),
-                        const SizedBox(height: 8),
-                        // --- UPDATED ROW WITH QR SCANNER BUTTON ---
-                        Row(children: [
-                          Expanded(child: Container(height: 40, padding: const EdgeInsets.symmetric(horizontal: 8), decoration: BoxDecoration(color: kSciFiDarkBlue, border: Border.all(color: primaryColor)), child: TextField(controller: _ipController, style: const TextStyle(color: Colors.white, fontFamily: 'Courier'), decoration: const InputDecoration(border: InputBorder.none, hintText: "COMMAND IP")))),
-
-                          // QR SCAN BUTTON
-                          IconButton(
-                              icon: Icon(Icons.qr_code_scanner, color: kSciFiCyan),
-                              onPressed: _openQRScanner
-                          ),
-
-                          const SizedBox(width: 4),
-                          SciFiButton(label: "LINK", icon: Icons.link, color: primaryColor, onTap: _connect)
-                        ])
-                      ]
-                      else Padding(padding: const EdgeInsets.only(top: 8), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                        Text("ID: ${_idController.text.toUpperCase()}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier', fontSize: 14)),
-                        IconButton(icon: const Icon(Icons.link_off, color: kSciFiRed), onPressed: _disconnect)
-                      ]))
-                    ]),
-                  ),
-                ),
-
-                if (_pendingOrder != null)
+                // --- MEDIC ROLE ADJUSTMENT ---
+                if (_selectedRole == "MEDIC")
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                    child: SciFiPanel(
-                      borderColor: widget.isStealth ? kSciFiRed : kSciFiGreen,
-                      title: "INCOMING ORDER // ${_pendingOrder!['sender']}",
-                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text(_pendingOrder!['content'], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18, fontFamily: 'Courier')),
-                        const SizedBox(height: 8),
-                        SciFiButton(label: "ACKNOWLEDGE", icon: Icons.check_circle, color: Colors.white, onTap: _acknowledgeOrder)
-                      ]),
+                    padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: SciFiButton(label: "OPEN BIO-SCANNER", icon: Icons.monitor_heart, color: kSciFiGreen, onTap: _openBioScanner),
                     ),
                   ),
 
-                // --- NEW: Waypoint Distance HUD ---
-                if (_waypoints.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                    child: Container(
-                      height: 40,
-                      child: ListView(
-                        scrollDirection: Axis.horizontal,
-                        children: _waypoints.map((wp) {
-                          int dist = _distanceCalc.as(LengthUnit.Meter, _myLocation, wp.location).toInt();
-                          return Container(
-                            margin: const EdgeInsets.only(right: 8),
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                // --- BLACK BOX & BURN BAG BUTTONS ---
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                  child: Row(
+                    children: [
+                      Expanded(
+                          child: Container(
+                            margin: const EdgeInsets.only(right: 4),
                             decoration: BoxDecoration(
-                                color: _getWaypointColor(wp.type).withOpacity(0.2),
-                                border: Border.all(color: _getWaypointColor(wp.type)),
+                                border: Border.all(color: _isBlackBoxActive ? Colors.redAccent : Colors.grey),
+                                color: _isBlackBoxActive ? Colors.red.withOpacity(0.2) : null,
                                 borderRadius: BorderRadius.circular(4)
                             ),
-                            child: Row(
-                              children: [
-                                Icon(_getWaypointIcon(wp.type), color: _getWaypointColor(wp.type), size: 14),
-                                const SizedBox(width: 4),
-                                Text("${wp.type}: ${dist}m", style: const TextStyle(color: Colors.white, fontSize: 12, fontFamily: 'Orbitron'))
-                              ],
+                            child: TextButton.icon(
+                                onPressed: _triggerBlackBox,
+                                icon: Icon(
+                                    _isBlackBoxActive ? Icons.stop_circle : Icons.fiber_manual_record,
+                                    size: 16,
+                                    color: _isBlackBoxActive ? Colors.redAccent : Colors.grey
+                                ),
+                                label: Text(
+                                    _isBlackBoxActive ? "REC ($_blackBoxRecordingTime s)" : "BLACK BOX",
+                                    style: TextStyle(color: _isBlackBoxActive ? Colors.white : Colors.grey, fontSize: 10)
+                                )
                             ),
-                          );
-                        }).toList(),
+                          )
                       ),
-                    ),
+                      Expanded(
+                          child: Container(
+                            margin: const EdgeInsets.only(left: 4),
+                            decoration: BoxDecoration(border: Border.all(color: Colors.red), borderRadius: BorderRadius.circular(4)),
+                            child: TextButton.icon(
+                                onPressed: _triggerBurnBag,
+                                icon: Icon(Icons.delete_forever, size: 16, color: Colors.red),
+                                label: Text("BURN BAG", style: TextStyle(color: Colors.red, fontSize: 10))
+                            ),
+                          )
+                      ),
+                    ],
                   ),
-
-                const Spacer(),
+                ),
 
                 Padding(
                   padding: const EdgeInsets.all(8.0),
@@ -739,17 +1143,19 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
                     borderColor: primaryColor,
                     child: Column(children: [
                       Row(children: [
-                        Expanded(child: SciFiButton(label: "BIO", icon: Icons.monitor_heart, color: _isBioActive ? kSciFiRed : Colors.grey, onTap: _openBioScanner)),
+                        if (_selectedRole != "MEDIC")
+                          Expanded(child: SciFiButton(label: "BIO", icon: Icons.monitor_heart, color: _isBioActive ? kSciFiRed : Colors.grey, onTap: _openBioScanner, isCompact: true)),
+                        if (_selectedRole != "MEDIC") const SizedBox(width: 4),
+
+                        Expanded(child: SciFiButton(label: "AR", icon: Icons.view_in_ar, color: kSciFiCyan, onTap: _openAR, isCompact: true)),
                         const SizedBox(width: 4),
-                        Expanded(child: SciFiButton(label: "AR", icon: Icons.view_in_ar, color: kSciFiCyan, onTap: _openAR)),
-                        const SizedBox(width: 4),
-                        Expanded(child: SciFiButton(label: "CAM", icon: Icons.camera_alt, color: Colors.purpleAccent, onTap: _sendTacticalImage)),
+                        Expanded(child: SciFiButton(label: "CAM", icon: Icons.camera_alt, color: Colors.purpleAccent, onTap: _sendTacticalImage, isCompact: true)),
                       ]),
                       const SizedBox(height: 4),
                       Row(children: [
-                        Expanded(child: SciFiButton(label: "SITREP", icon: Icons.assignment, color: Colors.blue, onTap: _sendSitrep)),
+                        Expanded(child: SciFiButton(label: "SITREP", icon: Icons.assignment, color: Colors.blue, onTap: _sendSitrep, isCompact: true)),
                         const SizedBox(width: 4),
-                        Expanded(child: SciFiButton(label: "LOGS", icon: _hasUnread ? Icons.mark_email_unread : Icons.history, color: _hasUnread ? kSciFiGreen : Colors.white, onTap: _showLogs)),
+                        Expanded(child: SciFiButton(label: "LOGS", icon: _hasUnread ? Icons.mark_email_unread : Icons.history, color: _hasUnread ? kSciFiGreen : Colors.white, onTap: _showLogs, isCompact: true)),
                       ]),
                       const SizedBox(height: 8),
 
@@ -776,26 +1182,28 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
               ],
             ),
           ),
-
-          // --- RECENTER BUTTON (BOTTOM RIGHT) ---
-          Positioned(
-              bottom: 240,
-              right: 16,
-              child: FloatingActionButton(
-                  mini: true,
-                  backgroundColor: kSciFiBlack,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      side: BorderSide(color: primaryColor)
-                  ),
-                  child: Icon(Icons.my_location, color: primaryColor),
-                  onPressed: () {
-                    if (_hasFix) _mapController.move(_myLocation, 17);
-                  }
-              )
-          ),
         ],
       ),
     );
   }
+}
+
+// --- EKG PAINTER ---
+class EkgPainter extends CustomPainter {
+  final double animationValue;
+  final Color color;
+  EkgPainter({required this.animationValue, required this.color});
+  @override void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = color..strokeWidth = 1.5..style = PaintingStyle.stroke;
+    final path = Path(); // Using dart:ui Path
+    final width = size.width; final height = size.height; final mid = height / 2;
+    for (double x = 0; x <= width; x++) {
+      double offset = (x / width) + animationValue;
+      double y = mid + sin(offset * pi * 10) * (height / 3); // Using direct math functions
+      if ((offset * 5) % 1 > 0.9) { y -= height / 2; }
+      if (x == 0) path.moveTo(x, y); else path.lineTo(x, y);
+    }
+    canvas.drawPath(path, paint);
+  }
+  @override bool shouldRepaint(covariant EkgPainter oldDelegate) => true;
 }

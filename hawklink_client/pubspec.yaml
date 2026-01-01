@@ -11,35 +11,37 @@ dependencies:
     sdk: flutter
 
   image_picker: ^1.0.7
-  # State Management & Utilities
   provider: ^6.1.1
   intl: ^0.19.0
   uuid: ^4.2.1
-
-  # Local Storage
   hive: ^2.2.3
   hive_flutter: ^1.1.0
-
-  # Mapping & Location
   flutter_map: ^6.0.0
   latlong2: ^0.9.0
   geolocator: ^11.0.0
   flutter_compass: ^0.8.0
   permission_handler: ^12.0.1
   flutter_tts: ^3.8.0
-
-
-  # Hardware Access
   battery_plus: ^6.0.3
   mobile_scanner: ^5.2.3
   wakelock_plus: ^1.0.0
 
-  # Security (Encryption)
+  # Use the latest version which is compatible with recent Flutter/Android builds
+  record: ^5.2.0
+
+  path_provider: ^2.0.0
   encrypt: ^5.0.1
   camera: ^0.11.3
   noise_meter: ^5.0.2
   http: ^1.6.0
 
+# OVERRIDE EXPLANATION:
+# The error `RecordMethodChannelPlatformInterface.startStream` is caused by
+# `record_linux` depending on a newer/different interface than what is resolved.
+# By overriding `record_linux` to 1.2.0 (which matches record 5.2.0's expectation),
+# we ensure the dependency graph is valid.
+dependency_overrides:
+  record_linux: ^1.2.0
 
 dev_dependencies:
   flutter_test:
