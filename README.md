@@ -1,5 +1,8 @@
 # **🦅 HawkLink Tactical System**
 
+<p align="center">
+  <img src="hawklink_client/assets/logo.png" width="350" />
+</p>
 
 
 A secure, offline-first Command \& Control (C2) platform for tactical situational awareness.
