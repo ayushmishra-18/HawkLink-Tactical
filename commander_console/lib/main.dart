@@ -14,6 +14,7 @@ import 'package:encrypt/encrypt.dart' as enc;
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:http/http.dart' as http; // ADDED HTTP
 import 'sci_fi_ui.dart';
 
 // --- CONFIGURATION ---
@@ -167,6 +168,10 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   List<LatLng> _activeDangerZone = [];
   bool _isMeasureMode = false;
   List<LatLng> _measurePoints = [];
+  bool _isWeatherUpdating = false; // Loading state for weather button
+
+  // Default Map Center (Hyderabad for testing)
+  LatLng _mapCenter = const LatLng(17.3850, 78.4867);
 
   @override
   void initState() {
@@ -174,6 +179,9 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     _startServer();
     _getLocalIps();
     _loadLogs();
+
+    // Initial weather fetch for default location
+    _fetchWeatherForLocation(_mapCenter);
 
     _pulseController = AnimationController(vsync: this, duration: const Duration(seconds: 1))..repeat(reverse: true);
     _ekgController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat();
@@ -207,6 +215,46 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
 
   // --- LOGIC METHODS ---
 
+  // NEW: Fetch Real Weather for Commander View
+  Future<void> _fetchWeatherForLocation(LatLng loc) async {
+    setState(() => _isWeatherUpdating = true);
+    try {
+      debugPrint("Fetching weather for: ${loc.latitude}, ${loc.longitude}");
+      final url = Uri.parse('https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&current_weather=true');
+      final response = await http.get(url);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final current = data['current_weather'];
+
+        setState(() {
+          _terrain.temperature = (current['temperature'] as num).toDouble();
+          _terrain.windSpeed = (current['windspeed'] as num).toDouble();
+
+          // Map WMO code to condition string
+          // Simplified mapping
+          int code = current['weathercode'];
+          if (code == 0) _terrain.condition = 'Clear';
+          else if (code < 3) _terrain.condition = 'Cloudy';
+          else if (code < 50) _terrain.condition = 'Foggy';
+          else if (code < 80) _terrain.condition = 'Rainy';
+          else _terrain.condition = 'Storm';
+
+          _isWeatherUpdating = false;
+        });
+
+        _log("SYS", "WEATHER UPDATED: ${_terrain.temperature}°C, ${_terrain.condition}");
+        _broadcastTerrain(); // Auto-sync with soldiers
+      } else {
+        setState(() => _isWeatherUpdating = false);
+      }
+    } catch (e) {
+      debugPrint("Weather Error: $e");
+      _log("SYS", "WEATHER FETCH FAILED");
+      setState(() => _isWeatherUpdating = false);
+    }
+  }
+
   void _broadcastTerrain() {
     String p = _encrypter.encrypt(jsonEncode({
       'type': 'TERRAIN',
@@ -214,60 +262,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
       'data': _terrain.toJson()
     }), iv: _iv).base64;
     for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){}
-    _log("CMD", "TERRAIN SYNCED: ${_terrain.condition}");
-  }
-
-  void _editTerrain() {
-    double tTemp = _terrain.temperature;
-    double tWind = _terrain.windSpeed;
-
-    showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          backgroundColor: kSciFiBlack,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: const BorderSide(color: kSciFiCyan)),
-          title: const Text("ENVIRONMENTAL CONTROLS", style: TextStyle(color: kSciFiCyan, fontFamily: 'Orbitron')),
-          content: StatefulBuilder(
-            builder: (context, setState) => Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text("TEMP: ${tTemp.toStringAsFixed(1)}°C", style: const TextStyle(color: Colors.white)),
-                Slider(
-                    value: tTemp, min: -20, max: 50,
-                    activeColor: kSciFiGreen,
-                    onChanged: (v) => setState(() => tTemp = v)
-                ),
-                Text("WIND: ${tWind.toStringAsFixed(1)} km/h", style: const TextStyle(color: Colors.white)),
-                Slider(
-                    value: tWind, min: 0, max: 100,
-                    activeColor: kSciFiCyan,
-                    onChanged: (v) => setState(() => tWind = v)
-                ),
-                DropdownButton<String>(
-                    value: _terrain.condition,
-                    dropdownColor: Colors.black,
-                    style: const TextStyle(color: Colors.white),
-                    items: ['Clear', 'Rainy', 'Foggy', 'Storm'].map((String value) {
-                      return DropdownMenuItem<String>(value: value, child: Text(value));
-                    }).toList(),
-                    onChanged: (v) => setState(() => _terrain.condition = v!)
-                )
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("CANCEL", style: TextStyle(color: Colors.grey))),
-            TextButton(onPressed: () {
-              this.setState(() {
-                _terrain.temperature = tTemp;
-                _terrain.windSpeed = tWind;
-              });
-              _broadcastTerrain();
-              Navigator.pop(ctx);
-            }, child: const Text("UPDATE & SYNC", style: TextStyle(color: kSciFiGreen, fontWeight: FontWeight.bold))),
-          ],
-        )
-    );
+    // _log("CMD", "TERRAIN SYNCED: ${_terrain.condition}"); // Reduced log spam
   }
 
   void _checkNetworkHealth(Timer t) {
@@ -353,6 +348,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
         setState(() => _currentlyPlayingPath = null);
       } else {
         await _intelPlayer.stop();
+        // Use device file source for recorded audio
         await _intelPlayer.play(DeviceFileSource(path));
         setState(() => _currentlyPlayingPath = path);
       }
@@ -513,12 +509,13 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                 child: Column(
                   children: [
                     const SciFiHeader(label: "HAWKLINK // C2"),
+                    // --- QR CODE & IP ---
                     Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                       Text("IP: ${_myIps.isNotEmpty ? _myIps.first : '...'}", style: const TextStyle(color: kSciFiGreen, fontSize: 10, fontFamily: 'Courier New')),
                       IconButton(icon: const Icon(Icons.qr_code, color: kSciFiCyan, size: 20), tooltip: "Quick Join QR", padding: EdgeInsets.zero, constraints: const BoxConstraints(), onPressed: _showQuickJoinQR)
                     ])),
 
-                    // --- TERRAIN WIDGET ---
+                    // --- TERRAIN WIDGET WITH DIRECT UPDATE ---
                     Container(
                       margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                       padding: const EdgeInsets.all(8),
@@ -532,7 +529,15 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                           ]),
                           Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
                             Text(_terrain.condition.toUpperCase(), style: TextStyle(color: _terrain.condition == 'Clear' ? kSciFiGreen : Colors.orange, fontSize: 10, fontWeight: FontWeight.bold, fontFamily: 'Orbitron')),
-                            GestureDetector(onTap: _editTerrain, child: const Icon(Icons.settings, size: 14, color: Colors.grey))
+                            // UPDATED: DIRECT SYNC BUTTON REPLACING SETTINGS
+                            GestureDetector(
+                                onTap: () {
+                                  _fetchWeatherForLocation(_mapController.camera.center);
+                                },
+                                child: _isWeatherUpdating
+                                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: kSciFiGreen))
+                                    : const Icon(Icons.refresh, size: 16, color: kSciFiGreen)
+                            )
                           ])
                         ],
                       ),
@@ -608,7 +613,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                       ),
                     ),
 
-                    // --- UPDATED COMMS LOG (With Audio + Meta) ---
+                    // --- UPDATED COMMS LOG (With Audio Player) ---
                     Expanded(
                         flex: 2,
                         child: SciFiPanel(
@@ -639,12 +644,11 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                                                       child: Image.file(File(l['image']), fit: BoxFit.cover)
                                                   )
                                               ),
-
-                                            // Audio Player + Vitals
+                                            // Audio Player
                                             if(l['audio']!=null)
                                               Container(
                                                 margin: const EdgeInsets.only(top: 4),
-                                                width: 220, // Wider for vitals
+                                                width: 220, // Wider for metadata
                                                 padding: const EdgeInsets.all(4),
                                                 decoration: BoxDecoration(
                                                     color: _currentlyPlayingPath == l['audio'] ? kSciFiCyan.withOpacity(0.2) : Colors.black,
@@ -668,6 +672,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                                                           SizedBox(width: 10, height: 10, child: CircularProgressIndicator(strokeWidth: 2, color: kSciFiCyan))
                                                       ],
                                                     ),
+                                                    // --- METADATA DISPLAY ---
                                                     if (meta != null) ...[
                                                       const Divider(color: Colors.white24, height: 4),
                                                       Text("LOC: ${meta['lat'].toStringAsFixed(4)}, ${meta['lng'].toStringAsFixed(4)}", style: const TextStyle(color: Colors.grey, fontSize: 9)),
@@ -700,7 +705,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                       alignment: Alignment.center,
                       child: FlutterMap(
                         mapController: _mapController,
-                        options: MapOptions(initialCenter: const LatLng(40.7128, -74.0060), initialZoom: 14, initialRotation: _rotation, onTap: _onMapTap, onLongPress: (tapPos, point) => _issueMoveOrder(point)),
+                        options: MapOptions(initialCenter: const LatLng(17.3850, 78.4867), initialZoom: 14, initialRotation: _rotation, onTap: _onMapTap, onLongPress: (tapPos, point) => _issueMoveOrder(point)),
                         children: [
                           TileLayer(urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', userAgentPackageName: 'com.hawklink.commander'),
                           if (_activeDangerZone.isNotEmpty) PolygonLayer(polygons: [Polygon(points: _activeDangerZone, color: kSciFiRed.withOpacity(0.2), borderColor: kSciFiRed, borderStrokeWidth: 2, isFilled: true)]),
