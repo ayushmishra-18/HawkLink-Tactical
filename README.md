@@ -71,7 +71,7 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)  [Bravo-1](h
 
 
 
-* AES-256 Encryption: All packets (chat, GPS, images, bio-data) are encrypted before transmission.
+* AES-256 Encryption: All packets (chat, GPS, images, bio-data, audio logs) are encrypted before transmission.
 
 
 
