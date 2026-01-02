@@ -123,11 +123,14 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)  [Bravo-1](h
 
 
 
-* Intel Hub: Receives and displays encrypted images from field units.
+* Intel Hub: Receives and displays encrypted images and Black Box Audio Logs from field units.
 
 
 
 * Persistent Logs: Automatically saves chat history and intel to disk.
+
+
+* Live Weather Sync: Fetches real-time environmental data (Wind/Temp) for the operation area.
 
 
 
@@ -152,6 +155,10 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)  [Bravo-1](h
 
 
 * Acoustic Gunshot Detection: Passive microphone monitoring that automatically detects high-decibel spikes (>95dB) and sends a "CONTACT REPORT" to Command.
+
+
+
+* Black Box Recorder: One-tap audio recording that encrypts and transmits voice logs + telemetry (BPM, Location) in 10-second chunks to the Commander.
 
 
 
@@ -185,7 +192,7 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)  [Bravo-1](h
 
 ###### 
 
-* ###### Flutter SDK(3.0+)
+* ###### Flutter SDK(3.22+)
 * ###### Visual Studio (required for Windows desktop builds)
 * ###### Android Studio (required for mobile builds)
 
@@ -203,8 +210,7 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)  [Bravo-1](h
 
 ```
 
-git clone \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\[https://github.com/ayushmishra-18/HawkLink-Tactical.git](https://github.com/ayushmishra-18/HawkLink-Tactical.git)
-
+git clone [https://github.com/ayushmishra-18/HawkLink-Tactical.git](https://github.com/ayushmishra-18/HawkLink-Tactical.git)
 cd HawkLink-Tactical
 
 ```
@@ -223,13 +229,9 @@ cd HawkLink-Tactical
 
 ```
 
-cd commander\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_console
-
-
+cd commander_console
 
 flutter pub get
-
-
 
 flutter run -d windows
 
@@ -253,13 +255,9 @@ flutter run -d windows
 
 ```
 
-cd soldier\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_app
-
-
+cd hawklink_client
 
 flutter pub get
-
-
 
 flutter run -d android
 
@@ -320,11 +318,10 @@ flutter run -d android
 * Sensors:
 
  	geolocator \& flutter\_compass  (Navigation)
-
  	camera  (AR \& BIO-scanning)
-noise\_meter  (Aciustic Detection)
-
- 	battery\_plus(Hardware monitering)
+  noise\_meter  (Aciustic Detection)
+ 	battery\_plus (Hardware monitering)
+  record (Black Box Audio)
 
 
 
@@ -373,6 +370,10 @@ noise\_meter  (Aciustic Detection)
 
 
 * ⚔️ Replaces error-prone voice radio commands
+
+
+
+* 🎙️ Black Box Audio: Real-time voice logging with telemetry.
 
 
 
