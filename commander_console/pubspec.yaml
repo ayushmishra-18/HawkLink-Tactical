@@ -20,6 +20,14 @@ dependencies:
   http: ^1.2.0
   permission_handler: ^11.0.0
   wakelock_plus: ^1.1.0
+
+  # Security Dependencies
+  pointycastle: ^3.7.3
+  cryptography: ^2.5.0
+  asn1lib: ^1.4.0
+  flutter_secure_storage: ^9.0.0
+  logger: ^2.0.2
+  basic_utils: ^5.7.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

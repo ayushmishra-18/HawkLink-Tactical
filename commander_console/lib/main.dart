@@ -14,13 +14,18 @@ import 'package:encrypt/encrypt.dart' as enc;
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-import 'package:http/http.dart' as http; // ADDED HTTP
+import 'package:http/http.dart' as http;
 import 'sci_fi_ui.dart';
+import 'security/secure_channel.dart';
+import 'security/key_exchange.dart';
+import 'security/key_exchange.dart';
+import 'security/command_signer.dart';
+import 'security/input_validator.dart';
+import 'security/secure_logger.dart';
 
 // --- CONFIGURATION ---
 const int kPort = 4444;
-const String kPreSharedKey = 'HAWKLINK_TACTICAL_SECURE_KEY_256';
-const String kFixedIV =      'HAWKLINK_IV_16ch';
+// KEYS REMOVED: Replaced with ECDH Key Exchange
 
 // --- HARDENING CONSTANTS (Top Level) ---
 const int kSignalWarning = 5;
@@ -122,7 +127,7 @@ class CommanderDashboard extends StatefulWidget {
 }
 
 class _CommanderDashboardState extends State<CommanderDashboard> with TickerProviderStateMixin {
-  ServerSocket? _server;
+  dynamic _server; // Changed from ServerSocket? to allow SecureServerSocket assignment
   final List<SoldierUnit> _units = [];
 
   // LOGS structure: {text: String, image: String?, audio: String?, meta: Map<String, dynamic>?}
@@ -143,9 +148,10 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   bool _audioEnabled = true;
 
   // Encryption
-  final _key = enc.Key.fromUtf8(kPreSharedKey);
-  final _iv = enc.IV.fromUtf8(kFixedIV);
-  late final _encrypter = enc.Encrypter(enc.AES(_key));
+  // Security
+  final Map<Socket, SecureChannel> _secureChannels = {};
+  final Map<Socket, KeyExchange> _keyExchanges = {};
+  final Map<Socket, bool> _handshakeComplete = {};
 
   // Visuals
   final MapController _mapController = MapController();
@@ -178,7 +184,9 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     super.initState();
     _startServer();
     _getLocalIps();
-    _loadLogs();
+    CommandSigner.loadKey(); // Load RSA Key
+    SecureLogger.init(); // Init encrypted logging
+    _loadSecureLogs();
 
     // Initial weather fetch for default location
     _fetchWeatherForLocation(_mapCenter);
@@ -219,7 +227,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   Future<void> _fetchWeatherForLocation(LatLng loc) async {
     setState(() => _isWeatherUpdating = true);
     try {
-      debugPrint("Fetching weather for: ${loc.latitude}, ${loc.longitude}");
+      // Fetching weather...
       final url = Uri.parse('https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&current_weather=true');
       final response = await http.get(url);
 
@@ -256,13 +264,11 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   }
 
   void _broadcastTerrain() {
-    String p = _encrypter.encrypt(jsonEncode({
+    for(var u in _units) _sendToSocket(u.socket, {
       'type': 'TERRAIN',
       'sender': 'COMMAND',
       'data': _terrain.toJson()
-    }), iv: _iv).base64;
-    for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){}
-    // _log("CMD", "TERRAIN SYNCED: ${_terrain.condition}"); // Reduced log spam
+    });
   }
 
   void _checkNetworkHealth(Timer t) {
@@ -284,8 +290,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
       _log("TAC", "⚠️ ALERT: ${u.id} BREACHED DANGER ZONE");
       _playAlert('alert.mp3');
       if (u.socket != null) {
-        String p = _encrypter.encrypt(jsonEncode({'type': 'BREACH', 'sender': 'COMMAND', 'content': '!!! YOU HAVE ENTERED A DANGER ZONE !!!'}), iv: _iv).base64;
-        u.socket!.add(utf8.encode("$p\n"));
+        _sendToSocket(u.socket, {'type': 'BREACH', 'sender': 'COMMAND', 'content': '!!! YOU HAVE ENTERED A DANGER ZONE !!!'});
       }
     } else if (!isInside && u.inDangerZone) {
       u.inDangerZone = false;
@@ -307,7 +312,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
 
   void _showQuickJoinQR() {
     if (_myIps.isEmpty) return;
-    String qrData = "${_myIps.first}|$kPreSharedKey";
+    String qrData = "${_myIps.first}|$kPort"; // Replaced PSK with Port
     showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -336,7 +341,26 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     );
   }
 
-  void _sendKillCommand(SoldierUnit u) { if(u.socket == null) return; try { u.socket!.write("${_encrypter.encrypt(jsonEncode({'type': 'KILL', 'target': u.id}), iv: _iv).base64}\n"); setState(() => u.status = "KILLED"); } catch(e){} }
+  void _sendKillCommand(SoldierUnit u) { 
+    final timestamp = DateTime.now().toIso8601String();
+    final cmd = {
+      'type': 'ZEROIZE_REQUEST', // changed from KILL
+      'target': u.id,
+      'timestamp': timestamp,
+      'reason': 'COMMANDER_INITIATED'
+    };
+    
+    final sig = CommandSigner.sign(cmd);
+    if(sig == null) { _log("SYS", "ERROR: CANNOT SIGN KILL CMD"); return; }
+    
+    cmd['signature'] = sig;
+    
+    _sendToSocket(u.socket, cmd);
+    _log("CMD", "ZEROIZE REQUEST SENT: ${u.id}");
+    
+    // Don't mark as KILLED instantly; wait for confirmation or timeout
+    setState(() => u.status = "ZEROIZING..."); 
+  }
   Future<void> _playSfx(String f) async { if(!_audioEnabled) return; try{ await _sfxPlayer.play(AssetSource('sounds/$f')); }catch(e){} }
   Future<void> _playAlert(String f) async { if(!_audioEnabled) return; try{ await _alertPlayer.play(AssetSource('sounds/$f')); }catch(e){} }
 
@@ -389,22 +413,97 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   }
 
   Future<void> _getLocalIps() async { try{ final i=await NetworkInterface.list(type: InternetAddressType.IPv4); setState(()=>_myIps=i.map((x)=>x.addresses.map((y)=>y.address).join(", ")).toList()); }catch(e){} }
-  Future<void> _startServer() async { try{ _server=await ServerSocket.bind(InternetAddress.anyIPv4, kPort); _server!.listen((c) { _clientBuffers[c]=[]; c.listen((d)=>_handleData(c,d), onError:(e)=>_removeClient(c), onDone:()=>_removeClient(c)); }); }catch(e){} }
-  void _removeClient(Socket c) { setState(() { for(var u in _units) { if(u.socket == c) u.socket = null; } _clientBuffers.remove(c); }); }
+  Future<void> _startServer() async {
+    try {
+      final context = SecurityContext(withTrustedRoots: true)
+        ..useCertificateChain('certs/server-cert.pem')
+        ..usePrivateKey('certs/server-key.pem')
+        // TRUST THE CLIENT CERT DIRECTLY (P2P Trust)
+        ..setTrustedCertificates('certs/client-cert.pem');
+        
+      _server = await SecureServerSocket.bind(
+        InternetAddress.anyIPv4, 
+        kPort, 
+        context,
+        requestClientCertificate: true, 
+        requireClientCertificate: true
+      );
+      
+      _server!.listen((c) {
+        _log("SEC", "ENCRYPTED CONNECTION: ${c.remoteAddress.address}");
+        _clientBuffers[c] = [];
+        c.listen(
+          (d) => _handleData(c, d),
+          onError: (e) => _removeClient(c),
+          onDone: () => _removeClient(c)
+        );
+        _initiateHandshake(c);
+      });
+    } catch (e) {
+      _log("SYS", "SERVER ERROR: $e");
+    }
+  }
+  void _removeClient(Socket c) { setState(() { for(var u in _units) { if(u.socket == c) u.socket = null; } _clientBuffers.remove(c); _secureChannels.remove(c); _keyExchanges.remove(c); }); }
   void _handleData(Socket c, List<int> d) { if(!_clientBuffers.containsKey(c)) _clientBuffers[c]=[]; _clientBuffers[c]!.addAll(d); List<int> b=_clientBuffers[c]!; while(true){ int i=b.indexOf(10); if(i==-1) break; List<int> p=b.sublist(0,i); b=b.sublist(i+1); _clientBuffers[c]=b; _processPacket(c,p); } }
+
+  // --- SECURITY HANDSHAKE ---
+  void _initiateHandshake(Socket c) async {
+    final ke = KeyExchange();
+    _keyExchanges[c] = ke;
+    await ke.generateKeyPair();
+    final pubKey = base64Encode(ke.getPublicKeyBytes());
+    c.add(utf8.encode("KEY_EXCHANGE|$pubKey\n"));
+    _log("SEC", "HANDSHAKE INIT: ${c.remoteAddress.address}");
+  }
 
   // --- UPDATED MESSAGE PROCESSING ---
   void _processPacket(Socket c, List<int> b) async {
     try {
-      final s=utf8.decode(b).trim();
-      if(s.isEmpty) return;
-      final dec=_encrypter.decrypt64(s, iv:_iv);
-      final j=jsonDecode(dec);
+      final s = utf8.decode(b).trim();
+      if (s.isEmpty) return;
+
+      // HANDSHAKE PHASE
+      if (!_secureChannels.containsKey(c)) {
+        if (s.startsWith("KEY_EXCHANGE|")) {
+          try {
+            final parts = s.split('|');
+            final peerPubKey = base64Decode(parts[1]);
+            final ke = _keyExchanges[c]!;
+            final sharedSecret = ke.computeSharedSecret(peerPubKey);
+            final sessionKey = ke.deriveSessionKey(sharedSecret, "salt", "HawkLink-v1");
+            
+            setState(() {
+              _secureChannels[c] = SecureChannel(sessionKey);
+            });
+            _log("SEC", "SECURE CHANNEL ESTABLISHED: ${c.remoteAddress.address}");
+          } catch(e) {
+            _log("SEC", "HANDSHAKE FAILED: $e");
+            c.close();
+          }
+        }
+        return;
+      }
+
+      // ENCRYPTED TRAFFIC
+      final channel = _secureChannels[c]!;
+      EncryptedMessage msg;
+      try {
+        final bytes = base64Decode(s);
+        msg = EncryptedMessage.fromBytes(bytes);
+      } catch(e) { return; } // Invalid format
+      
+      final dec = channel.decrypt(msg);
+      final j = jsonDecode(dec);
+
+      // PHASE 3: INPUT VALIDATION
+      if (!InputValidator.validatePacket(j)) {
+        _log("SEC", "DROPPED INVALID PACKET from ${c.remoteAddress.address}");
+        return;
+      }
 
       if(j['type']=='STATUS') _updateUnit(c,j);
       else if(j['type']=='CHAT'||j['type']=='ACK') {
         _log(j['sender'],j['content']);
-        // Trigger alerts
         String content = j['content'].toString().toUpperCase();
         if(content.contains("SOS") || content.contains("BURN BAG") || content.contains("BLACK BOX") || content.contains("BREACH")) {
           _playAlert('alert.mp3');
@@ -420,23 +519,13 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
         _log(j['sender'], "📸 INTEL RECEIVED", imagePath:p);
         _playSfx('connect.mp3');
       }
-      // --- UPDATED: HANDLE AUDIO PACKET WITH METADATA ---
       else if (j['type'] == 'INTEL_AUDIO') {
-        // Extract metadata fields sent from soldier
         Map<String, dynamic> meta = {
-          'lat': j['lat'],
-          'lng': j['lng'],
-          'bpm': j['bpm'],
-          'spO2': j['spO2'],
-          'bp': j['bp'],
-          'timestamp': j['timestamp']
+          'lat': j['lat'], 'lng': j['lng'], 'bpm': j['bpm'],
+          'spO2': j['spO2'], 'bp': j['bp'], 'timestamp': j['timestamp']
         };
-
         String p = await _saveAudioToDisk(j['sender'], j['content'], meta);
-
-        // Pass metadata to the log function so UI can display it
         _log(j['sender'], "🎙️ AUDIO LOG REC", audioPath: p, meta: meta);
-
         _playSfx('connect.mp3');
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text("🎙️ BLACK BOX AUDIO RECEIVED", style: TextStyle(fontWeight: FontWeight.bold)),
@@ -448,7 +537,20 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
         _log(j['sender'], "⚠️ HEAT STRESS ALERT");
         _playAlert('alert.mp3');
       }
-    } catch(e){}
+    } catch(e){
+       debugPrint("Processing Error: $e");
+    }
+  }
+
+  void _sendToSocket(Socket? s, Map<String, dynamic> data) {
+    if(s == null || !_secureChannels.containsKey(s)) return;
+    try {
+      final channel = _secureChannels[s]!;
+      final jsonStr = jsonEncode(data);
+      final msg = channel.encrypt(jsonStr);
+      final b64 = base64Encode(msg.toBytes());
+      s.add(utf8.encode("$b64\n"));
+    } catch(e) {}
   }
 
   void _updateUnit(Socket s, Map<String,dynamic> d) { setState(() { final id=d['id']; final idx=_units.indexWhere((u)=>u.id==id); final loc=LatLng(d['lat'],d['lng']); if(idx!=-1){ var u = _units[idx]; u.location=loc; u.heading=(d['head']??0.0).toDouble(); u.role=d['role']??"ASSAULT"; u.battery=d['bat']; u.bpm=d['bpm']??75; u.spO2=d['spo2']??98; u.bp=d['bp']??"120/80"; u.temp=(d['temp']??98.6).toDouble(); u.status=d['state']; u.isHeatStress = d['heat']??false; u.lastSeen=DateTime.now(); u.socket=s; _checkGeofences(u); if(u.pathHistory.isEmpty || const Distance().as(LengthUnit.Meter, u.pathHistory.last, loc)>5) u.pathHistory.add(loc); } else { var newUnit = SoldierUnit(id:id, location:loc, role:d['role']??"ASSAULT", battery:d['bat'], bpm:d['bpm']??75, spO2:d['spo2']??98, bp:d['bp']??"120/80", temp:(d['temp']??98.6).toDouble(), status:d['state'], isHeatStress: d['heat']??false, lastSeen:DateTime.now(), socket:s, history:[loc]); _checkGeofences(newUnit); _units.add(newUnit); _log("NET", "UNIT REGISTERED: $id"); _playSfx('connect.mp3'); } }); }
@@ -457,20 +559,31 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   void _log(String s, String m, {String? imagePath, String? audioPath, Map<String, dynamic>? meta}) {
     String t=DateFormat('HH:mm:ss').format(DateTime.now());
     setState(()=>_logs.insert(0, {'text':"[$t] $s: $m", 'image':imagePath, 'audio':audioPath, 'meta': meta}));
-    _saveLog("[$t] $s: $m");
+    if(_logs.length>200) _logs.removeLast();
+    // _saveLog("[$t] $s: $m"); // Legacy plaintext save disabled
+    SecureLogger.log(s, m); // Encrypted persistence
   }
 
-  void _handleCommandInput(String input) { if(input.isEmpty) return; if (input.startsWith('@')) { List<String> p = input.split(' '); if (p.isNotEmpty) { String id = p[0].substring(1).toUpperCase().trim(); String c = p.skip(1).join(' '); try { final u = _units.firstWhere((u) => u.id.toUpperCase().trim() == id); if (u.socket != null) { u.socket!.add(utf8.encode("${_encrypter.encrypt(jsonEncode({'type': 'CHAT', 'sender': 'COMMAND (PVT)', 'content': ">> $c"}), iv: _iv).base64}\n")); _log("CMD", "TO $id: $c"); _playSfx('order.mp3'); } else { _log("CMD", "ERROR: $id OFFLINE"); } } catch (e) { _log("CMD", "ERROR: UNIT '$id' NOT FOUND"); } } } else { _broadcastOrder(input); } _cmdController.clear(); }
-  void _broadcastOrder(String t) { String p=_encrypter.encrypt(jsonEncode({'type':'CHAT', 'sender':'COMMAND', 'content':t}), iv:_iv).base64; for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){} _log("CMD", "BROADCAST: $t"); _playSfx('order.mp3'); }
-  void _issueMoveOrder(LatLng d) { if(_isDrawingMode||_placingWaypointType!=null||_isDeleteWaypointMode||_selectedUnitId==null||_isMeasureMode) return; try{ final u=_units.firstWhere((x)=>x.id==_selectedUnitId); String p=_encrypter.encrypt(jsonEncode({'type':'MOVE_TO', 'sender':'COMMAND', 'content':"MOVE TO ${d.latitude.toStringAsFixed(4)}, ${d.longitude.toStringAsFixed(4)}", 'lat':d.latitude, 'lng':d.longitude}), iv:_iv).base64; u.socket?.add(utf8.encode("$p\n")); _log("CMD", "VECTOR ASSIGNED: $u.id"); _playSfx('order.mp3'); }catch(e){} }
+  void _loadSecureLogs() async {
+    final logs = await SecureLogger.readLogs();
+    setState(() {
+      for(var l in logs) {
+        _logs.add({'text': l, 'time': DateTime.now()}); 
+      }
+    });
+  }
+
+  void _handleCommandInput(String input) { if(input.isEmpty) return; if (input.startsWith('@')) { List<String> p = input.split(' '); if (p.isNotEmpty) { String id = p[0].substring(1).toUpperCase().trim(); String c = p.skip(1).join(' '); try { final u = _units.firstWhere((u) => u.id.toUpperCase().trim() == id); if (u.socket != null) { _sendToSocket(u.socket, {'type': 'CHAT', 'sender': 'COMMAND (PVT)', 'content': ">> $c"}); _log("CMD", "TO $id: $c"); _playSfx('order.mp3'); } else { _log("CMD", "ERROR: $id OFFLINE"); } } catch (e) { _log("CMD", "ERROR: UNIT '$id' NOT FOUND"); } } } else { _broadcastOrder(input); } _cmdController.clear(); }
+  void _broadcastOrder(String t) { for(var u in _units) _sendToSocket(u.socket, {'type':'CHAT', 'sender':'COMMAND', 'content':t}); _log("CMD", "BROADCAST: $t"); _playSfx('order.mp3'); }
+  void _issueMoveOrder(LatLng d) { if(_isDrawingMode||_placingWaypointType!=null||_isDeleteWaypointMode||_selectedUnitId==null||_isMeasureMode) return; try{ final u=_units.firstWhere((x)=>x.id==_selectedUnitId); _sendToSocket(u.socket, {'type':'MOVE_TO', 'sender':'COMMAND', 'content':"MOVE TO ${d.latitude.toStringAsFixed(4)}, ${d.longitude.toStringAsFixed(4)}", 'lat':d.latitude, 'lng':d.longitude}); _log("CMD", "VECTOR ASSIGNED: $u.id"); _playSfx('order.mp3'); }catch(e){} }
   void _onMapTap(TapPosition p, LatLng l) { if (_isMeasureMode) { setState(() => _measurePoints.add(l)); _playSfx('connect.mp3'); return; } if(_isDeleteWaypointMode){ _removeWaypointNear(l); setState(()=>_isDeleteWaypointMode=false); return; } if(_placingWaypointType!=null){ _deployWaypoint(l, _placingWaypointType!); setState(()=>_placingWaypointType=null); return; } if(_isDrawingMode){ setState(()=>_tempDrawPoints.add(l)); return; } setState(()=>_selectedUnitId=null); }
   void _toggleMeasureMode() { setState(() { if (_isMeasureMode) { _measurePoints.clear(); _isMeasureMode = false; } else { _isMeasureMode = true; _measurePoints.clear(); _isDrawingMode = false; _placingWaypointType = null; _isDeleteWaypointMode = false; } }); }
   void _clearMeasurements() { setState(() => _measurePoints.clear()); }
-  void _deployWaypoint(LatLng l, String t) { String id="${t}_${DateTime.now().millisecondsSinceEpoch}"; TacticalWaypoint w=TacticalWaypoint(id:id, type:t, location:l, created:DateTime.now()); setState(()=>_waypoints.add(w)); String p=_encrypter.encrypt(jsonEncode({'type':'WAYPOINT', 'action':'ADD', 'data':w.toJson()}), iv:_iv).base64; for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){} _log("CMD", "WAYPOINT DEPLOYED: $t"); _playSfx('order.mp3'); }
-  void _removeWaypointNear(LatLng l) { try { _waypoints.sort((a, b) => const Distance().as(LengthUnit.Meter, a.location, l).compareTo(const Distance().as(LengthUnit.Meter, b.location, l))); final c = _waypoints.first; if (const Distance().as(LengthUnit.Meter, c.location, l) < 50) { setState(() => _waypoints.remove(c)); String p = _encrypter.encrypt(jsonEncode({'type': 'WAYPOINT', 'action': 'REMOVE', 'id': c.id}), iv: _iv).base64; for (var u in _units) try { u.socket?.add(utf8.encode("$p\n")); } catch (e) {} _log("CMD", "REMOVED WAYPOINT: ${c.type}"); _playSfx('connect.mp3'); } } catch (e) {} }
+  void _deployWaypoint(LatLng l, String t) { String id="${t}_${DateTime.now().millisecondsSinceEpoch}"; TacticalWaypoint w=TacticalWaypoint(id:id, type:t, location:l, created:DateTime.now()); setState(()=>_waypoints.add(w)); for(var u in _units) _sendToSocket(u.socket, {'type':'WAYPOINT', 'action':'ADD', 'data':w.toJson()}); _log("CMD", "WAYPOINT DEPLOYED: $t"); _playSfx('order.mp3'); }
+  void _removeWaypointNear(LatLng l) { try { _waypoints.sort((a, b) => const Distance().as(LengthUnit.Meter, a.location, l).compareTo(const Distance().as(LengthUnit.Meter, b.location, l))); final c = _waypoints.first; if (const Distance().as(LengthUnit.Meter, c.location, l) < 50) { setState(() => _waypoints.remove(c)); for (var u in _units) _sendToSocket(u.socket, {'type': 'WAYPOINT', 'action': 'REMOVE', 'id': c.id}); _log("CMD", "REMOVED WAYPOINT: ${c.type}"); _playSfx('connect.mp3'); } } catch (e) {} }
   void _toggleDrawingMode() { setState(() { _isDrawingMode=!_isDrawingMode; _tempDrawPoints=[]; }); }
-  void _deployCustomZone() { if(_tempDrawPoints.length<3) return; setState(() { _activeDangerZone=List.from(_tempDrawPoints); _isDrawingMode=false; _tempDrawPoints=[]; }); List<List<double>> pts=_activeDangerZone.map((p)=>[p.latitude, p.longitude]).toList(); String p=_encrypter.encrypt(jsonEncode({'type':'ZONE', 'sender':'COMMAND', 'points':pts}), iv:_iv).base64; for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){} _log("CMD", "ZONE DEPLOYED"); _playAlert('alert.mp3'); }
-  void _clearZone() { setState(() { _activeDangerZone=[]; _tempDrawPoints=[]; }); String p=_encrypter.encrypt(jsonEncode({'type':'ZONE', 'sender':'COMMAND', 'points':[]}), iv:_iv).base64; for(var u in _units) try{u.socket?.add(utf8.encode("$p\n"));}catch(e){} _log("CMD", "ZONE CLEARED"); }
+  void _deployCustomZone() { if(_tempDrawPoints.length<3) return; setState(() { _activeDangerZone=List.from(_tempDrawPoints); _isDrawingMode=false; _tempDrawPoints=[]; }); List<List<double>> pts=_activeDangerZone.map((p)=>[p.latitude, p.longitude]).toList(); for(var u in _units) _sendToSocket(u.socket, {'type':'ZONE', 'sender':'COMMAND', 'points':pts}); _log("CMD", "ZONE DEPLOYED"); _playAlert('alert.mp3'); }
+  void _clearZone() { setState(() { _activeDangerZone=[]; _tempDrawPoints=[]; }); for(var u in _units) _sendToSocket(u.socket, {'type':'ZONE', 'sender':'COMMAND', 'points':[]}); _log("CMD", "ZONE CLEARED"); }
   IconData _getRoleIcon(String r) { switch(r){ case "MEDIC": return Icons.medical_services; case "SCOUT": return Icons.visibility; case "SNIPER": return Icons.gps_fixed; case "ENGINEER": return Icons.build; default: return Icons.shield; } }
   IconData _getWaypointIcon(String t) { switch(t) { case "RALLY": return Icons.flag; case "ENEMY": return Icons.warning_amber_rounded; case "MED": return Icons.medical_services; case "LZ": return Icons.flight_land; default: return Icons.location_on; } }
   Color _getWaypointColor(String t) { switch(t) { case "RALLY": return Colors.blueAccent; case "ENEMY": return kSciFiRed; case "MED": return Colors.white; case "LZ": return kSciFiGreen; default: return kSciFiCyan; } }

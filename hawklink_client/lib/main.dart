@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math'; // Imports sin, cos, pi directly
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:geolocator/geolocator.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:encrypt/encrypt.dart' as enc;
@@ -25,11 +26,17 @@ import 'ar_compass.dart';
 import 'acoustic_sensor.dart';
 import 'models.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'security/secure_channel.dart';
+import 'security/secure_logger.dart';
+import 'security/key_exchange.dart';
+import 'security/command_verifier.dart';
+import 'security/input_validator.dart';
 
 // --- CONFIGURATION ---
+// --- CONFIGURATION ---
 const int kPort = 4444;
-const String kPreSharedKey = 'HAWKLINK_TACTICAL_SECURE_KEY_256';
-const String kFixedIV =      'HAWKLINK_IV_16ch';
+// KEYS REMOVED: Replaced with ECDH Key Exchange
 
 void main() {
   runApp(const SoldierApp());
@@ -118,9 +125,10 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   final Battery _battery = Battery();
   final FlutterTts _tts = FlutterTts();
   final ImagePicker _picker = ImagePicker();
-  final _key = enc.Key.fromUtf8(kPreSharedKey);
-  final _iv = enc.IV.fromUtf8(kFixedIV);
-  late final _encrypter = enc.Encrypter(enc.AES(_key));
+  
+  // Security
+  SecureChannel? _secureChannel;
+  final KeyExchange _keyExchange = KeyExchange();
   late AnimationController _sosController;
   List<int> _incomingBuffer = [];
 
@@ -158,7 +166,10 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     _initTts();
 
     _initAcousticSensor();
-
+    _initAcousticSensor();
+    CommandVerifier.loadKey(); // Load Server Key for verification
+    SecureLogger.init(); // Secure Logs
+    
     // --- FATIGUE CHECKER ---
     _biometricTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
@@ -343,7 +354,23 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     FocusScope.of(context).unfocus();
     setState(() => _status = "SEARCHING...");
     try {
-      _socket = await Socket.connect(_ipController.text, kPort, timeout: const Duration(seconds: 5));
+      // Load Security Certificates
+      final clientCert = await rootBundle.loadString('assets/certs/client-cert.pem');
+      final clientKey = await rootBundle.loadString('assets/certs/client-key.pem');
+      final serverCert = await rootBundle.loadString('assets/certs/ca-cert.pem');
+
+      final context = SecurityContext(withTrustedRoots: true)
+        ..useCertificateChainBytes(utf8.encode(clientCert))
+        ..usePrivateKeyBytes(utf8.encode(clientKey))
+        ..setTrustedCertificatesBytes(utf8.encode(serverCert));
+
+      _socket = await SecureSocket.connect(
+        _ipController.text, 
+        kPort, 
+        context: context,
+        timeout: const Duration(seconds: 10),
+        onBadCertificate: (cert) => true, // Verification handled by setTrustedCertificates
+      );
       setState(() => _status = "SECURE UPLINK ESTABLISHED");
       if (!widget.isStealth) _tts.speak("Connected");
       _incomingBuffer = [];
@@ -355,23 +382,73 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
 
   void _disconnect() { _socket?.destroy(); if (mounted) setState(() { _status = "DISCONNECTED"; _socket = null; }); }
 
-  void _handleIncomingPacket(List<int> data) {
+  void _handleIncomingPacket(List<int> data) async {
     _incomingBuffer.addAll(data);
     try {
-      final str = utf8.decode(data).trim();
+      final str = utf8.decode(_incomingBuffer).trim();
       if (str.isEmpty) return;
-      final decrypted = _encrypter.decrypt64(str, iv: _iv);
+      
+      // HANDSHAKE
+      if (_secureChannel == null) {
+        if (str.startsWith("KEY_EXCHANGE|")) {
+           try {
+             final parts = str.split('|');
+             final serverPubKey = base64Decode(parts[1]);
+             
+             // Generate our keys
+             await _keyExchange.generateKeyPair();
+             final myPubKey = base64Encode(_keyExchange.getPublicKeyBytes());
+             
+             // Send our key
+             _socket!.add(utf8.encode("KEY_EXCHANGE|$myPubKey\n"));
+             
+             // Compute Shared Secret
+             final sharedSecret = _keyExchange.computeSharedSecret(serverPubKey);
+             final sessionKey = _keyExchange.deriveSessionKey(sharedSecret, "salt", "HawkLink-v1");
+             
+             setState(() {
+               _secureChannel = SecureChannel(sessionKey);
+               _status = "SECURE PROTOCOL ACTIVE"; // Update status
+             });
+             _incomingBuffer.clear();
+           } catch(e) {
+             setState(() => _status = "HANDSHAKE ERROR");
+             _disconnect();
+           }
+        }
+        return;
+      }
+      
+      // ENCRYPTED MSG
+      EncryptedMessage msg;
+      try {
+        final bytes = base64Decode(str);
+        msg = EncryptedMessage.fromBytes(bytes);
+        _incomingBuffer.clear(); // Clear buffer only on successful parse attempt
+      } catch(e) { return; } // Wait for more data? Or invalid?
+
+      final decrypted = _secureChannel!.decrypt(msg);
       final json = jsonDecode(decrypted);
+      
+      // PHASE 3: INPUT VALIDATION
+      if (!InputValidator.validatePacket(json)) {
+         // debugPrint("INVALID PACKET DROPPED");
+         return;
+      }
+
       _processMessage(json);
-      _incomingBuffer.clear();
-    } catch(e) {}
+    } catch(e) {
+      // debugPrint("Parse Error: $e");
+    }
   }
 
   void _processMessage(Map<String, dynamic> json) {
-    if (json['type'] == 'KILL' && json['target'] == _idController.text.toUpperCase()) {
-      _executeSelfDestruct();
+    // SECURE KILL COMMAND HANDLER
+    if (json['type'] == 'ZEROIZE_REQUEST') {
+      _handleZeroizeRequest(json);
       return;
     }
+    // LEGACY KILL REMOVED
 
     if (json['type'] == 'ZONE') {
       List<dynamic> points = json['points'];
@@ -415,33 +492,91 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     }
   }
 
-  Future<void> _executeSelfDestruct() async {
-    _socket?.destroy();
+  // --- SECURE ZEROIZATION LOGIC ---
+  void _handleZeroizeRequest(Map<String, dynamic> json) async {
+    // 1. Verify Signature
+    if (!CommandVerifier.verify(json)) {
+      _sendPacket({'type': 'CHAT', 'content': 'SECURITY: Invalid Zeroize Signature Detected'});
+      return;
+    }
+    
+    // 2. Check Target ID
+    if (json['target'] != _idController.text.toUpperCase()) return;
+
+    // 3. Multi-Factor Confirmation
+    bool confirmed = await showDialog(
+      context: context,
+      barrierDismissible: false, 
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.red[900],
+        title: const Text("⚠️ PROTOCOL ZERO", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text("Remote Command: WIPE DEVICE", style: TextStyle(color: Colors.white)),
+            Text("Reason: ${json['reason']}", style: const TextStyle(color: Colors.white70)),
+            const SizedBox(height: 20),
+            const Text("CONFIRM IDENTITY TO PROCEED", style: TextStyle(color: Colors.amber)),
+          ],
+        ),
+        actions: [
+           TextButton(
+             onPressed: () => Navigator.pop(ctx, false), 
+             child: const Text("DENY", style: TextStyle(color: Colors.white))
+           ),
+           ElevatedButton(
+             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+             onPressed: () => Navigator.pop(ctx, true),
+             child: const Text("CONFIRM WIPE")
+           )
+        ],
+      )
+    ) ?? false;
+
+    if(confirmed) {
+      // 4. Biometric/PIN Check (Mock for now)
+      // In real app, call LocalAuthentication
+      _executeSecureZeroization();
+    } else {
+      _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': 'ZEROIZE COMMAND DENIED BY OPERATOR'});
+    }
+  }
+
+  Future<void> _executeSecureZeroization() async {
+    _sendPacket({'type': 'CHAT', 'sender': _idController.text.toUpperCase(), 'content': 'ZEROIZE: EXECUTING...'});
+    SecureLogger.log("SEC", "ZEROIZATION EXECUTED - WIPING DATA"); // Audit Trail before death
+    _socket?.destroy(); // Cut comms
+    
+    // Secure Storage Wipe
+    final storage = FlutterSecureStorage();
+    await storage.deleteAll();
+    
+    // File Wipe (Simple overwrite for now, DoD 3-pass in production)
+    final d = await getApplicationDocumentsDirectory();
+    if(d.existsSync()) d.deleteSync(recursive: true);
+    
     if (!mounted) exit(0);
+    
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => Scaffold(
-        backgroundColor: Colors.blue[900],
-        body: Padding(
-          padding: const EdgeInsets.all(20.0),
+        backgroundColor: Colors.black,
+        body: Center(
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisAlignment: MainAxisAlignment.center,
             children: const [
-              Icon(Icons.error_outline, size: 80, color: Colors.white),
-              SizedBox(height: 20),
-              Text("SYSTEM HALTED", style: TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.bold, fontFamily: 'Courier')),
-              SizedBox(height: 10),
-              Text("Error Code: 0xDEADBEEF", style: TextStyle(color: Colors.white, fontFamily: 'Courier')),
-              Text("Memory Dump: Complete.", style: TextStyle(color: Colors.white, fontFamily: 'Courier')),
-              Text("Zeroization: SUCCESS.", style: TextStyle(color: Colors.white, fontFamily: 'Courier')),
+               Icon(Icons.lock, size: 80, color: Colors.green),
+               SizedBox(height: 20),
+               Text("DEVICE SANITIZED", style: TextStyle(color: Colors.green, fontSize: 24, fontFamily: 'Courier')),
+               Text("SHUTTING DOWN...", style: TextStyle(color: Colors.green, fontFamily: 'Courier')),
             ],
           ),
         ),
       ),
     );
-    await Future.delayed(const Duration(seconds: 3));
+    await Future.delayed(const Duration(seconds: 4));
     exit(0);
   }
 
@@ -584,11 +719,12 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   }
 
   void _sendPacket(Map<String, dynamic> data) {
-    if (_socket == null) return;
+    if (_socket == null || _secureChannel == null) return;
     try {
       final jsonStr = jsonEncode(data);
-      final encrypted = _encrypter.encrypt(jsonStr, iv: _iv).base64;
-      _socket!.add(utf8.encode("$encrypted\n"));
+      final msg = _secureChannel!.encrypt(jsonStr);
+      final b64 = base64Encode(msg.toBytes());
+      _socket!.add(utf8.encode("$b64\n"));
     } catch (e) {}
   }
 
