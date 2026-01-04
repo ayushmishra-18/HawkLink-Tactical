@@ -5,11 +5,11 @@
 </p>
 
 
-A secure, offline-first Command \& Control (C2) platform for tactical situational awareness.
+A secure, offline-first **Command \& Control (C2)** platform for tactical situational awareness.
 
 
 
-HawkLink allows commanders to coordinate field units in real-time without relying on the internet or cellular infrastructure. It uses a secure local TCP mesh to transmit GPS, orders, and intelligence data.
+HawkLink allows commanders to coordinate field units in real-time without relying on the internet or cellular infrastructure. It uses a **secure local TCP mesh** to transmit GPS, orders, and intelligence data.
 
 
 
@@ -17,7 +17,7 @@ HawkLink allows commanders to coordinate field units in real-time without relyin
 
 
 
-This repository contains two independent yet interconnected applications:
+This repository contains **two independent yet interconnected applications**:
 
 
 
@@ -67,15 +67,15 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)  [Bravo-1](h
 
 
 
-* Zero-Internet Dependency: Works entirely over local LAN, Hotspot, or Mesh VPN (Tailscale).
+* **Zero-Internet Dependency**: Works entirely over local LAN, Hotspot, or Mesh VPN (Tailscale).
 
 
 
-* AES-256 Encryption: All packets (chat, GPS, images, bio-data) are encrypted before transmission.
+* **AES-256 Encryption**: All packets (chat, GPS, images, bio-data, audio logs) are encrypted before transmission.
 
 
 
-* Custom TCP Protocol: Binary-efficient data exchange for low-latency performance.
+* **Custom TCP Protocol**: Binary-efficient data exchange for low-latency performance.
 
 
 
@@ -85,27 +85,27 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)  [Bravo-1](h
 
 
 
-* 3D Satellite Map: Tilt and rotate the battlefield for tactical terrain analysis.
+* **3D Satellite Map**: Tilt and rotate the battlefield for tactical terrain analysis.
 
 
 
-* Live Bio-Telemetry Platform: Real-time visualization of soldier status:
+* **Live Bio-Telemetry Platform**: Real-time visualization of soldier status:
 
 
 
- 	EKG Graph: Live animating heart rate monitor.
+ 	**EKG Graph**: Live animating heart rate monitor.
 
 
 
- 	SpO2 \& Battery: Critical vital stats at a glance.
+ **	SpO2 \& Battery**: Critical vital stats at a glance.
 
 
 
-* Real-Time Unit Tracking: Live position updates with Breadcrumb Trails.
+* **Real-Time Unit Tracking**: Live position updates with Breadcrumb Trails.
 
 
 
-* Tactical Waypoints: Drop drag-and-drop markers:
+* **Tactical Waypoints**: Drop drag-and-drop markers:
 
 
 
@@ -119,15 +119,18 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)  [Bravo-1](h
 
 
 
-* Dynamic Geofencing: Draw "Red Zones" on the map; soldiers inside receive immediate audio/visual warnings.
+* **Dynamic Geofencing**: Draw "Red Zones" on the map; soldiers inside receive immediate audio/visual warnings.
 
 
 
-* Intel Hub: Receives and displays encrypted images from field units.
+* **Intel Hub**: Receives and displays encrypted images and Black Box Audio Logs from field units.
 
 
 
-* Persistent Logs: Automatically saves chat history and intel to disk.
+* **Persistent Logs**: Automatically saves chat history and intel to disk.
+
+
+* **Live Weather Sync**: Fetches real-time environmental data (Wind/Temp) for the operation area.
 
 
 
@@ -135,43 +138,47 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)  [Bravo-1](h
 
 
 
-* Role-Based Warfare: Select classes (Medic, Sniper, Scout, Engineer) with unique icons.
+* **Role-Based Warfare**: Select classes (Medic, Sniper, Scout, Engineer) with unique icons.
 
 
 
-* AR Compass (Augmented Reality): Heads-Up Display (HUD) overlaying waypoints and distances on the real-world camera feed.
+* **AR Compass (Augmented Reality)**: Heads-Up Display (HUD) overlaying waypoints and distances on the real-world camera feed.
 
 
 
-* Compass Vision: Transmits real-time magnetic heading (Cone of Vision) to the commander.
+* ** Compass Vision**: Transmits real-time magnetic heading (Cone of Vision) to the commander.
 
 
 
-* Optical Bio-Scanner: Uses the phone's camera and flash \[PPG (Photoplethysmography) technology to measure Heart Rate without external hardware.
+* **Optical Bio-Scanner**: Uses the phone's camera and flash \[PPG (Photoplethysmography) technology to measure Heart Rate without external hardware.
 
 
 
-* Acoustic Gunshot Detection: Passive microphone monitoring that automatically detects high-decibel spikes (>95dB) and sends a "CONTACT REPORT" to Command.
+* **Acoustic Gunshot Detection**: Passive microphone monitoring that automatically detects high-decibel spikes (>95dB) and sends a "CONTACT REPORT" to Command.
 
 
 
-* Tactical Cam: Snap and send encrypted photos directly to HQ.
+* **Black Box Recorder**: One-tap audio recording that encrypts and transmits voice logs + telemetry (BPM, Location) in 10-second chunks to the Commander.
 
 
 
-* Stealth Mode: One-tap toggle to switch UI to OLED Black/Red for night vision compatibility.
+* **Tactical Cam**: Snap and send encrypted photos directly to HQ.
 
 
 
-* Voice Command (TTS): Reads orders out loud ("New Order: Move to Sector 4").
+* **Stealth Mode**: One-tap toggle to switch UI to OLED Black/Red for night vision compatibility.
 
 
 
-* SOS Beacon: Emergency panic button that triggers a fleet-wide alert.
+* **Voice Command (TTS)**: Reads orders out loud ("New Order: Move to Sector 4").
 
 
 
-* Order Acknowledgment: "COPY THAT" button to confirm receipt of orders.
+* **SOS Beacon**: Emergency panic button that triggers a fleet-wide alert.
+
+
+
+* **Order Acknowledgment**: "COPY THAT" button to confirm receipt of orders.
 
 
 
@@ -185,7 +192,7 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)  [Bravo-1](h
 
 ###### 
 
-* ###### Flutter SDK(3.0+)
+* ###### Flutter SDK(3.22+)
 * ###### Visual Studio (required for Windows desktop builds)
 * ###### Android Studio (required for mobile builds)
 
@@ -203,8 +210,7 @@ Soldier:- [Alpha-1](hawklink_client/assets/screenshots/alpha-1.jpg)  [Bravo-1](h
 
 ```
 
-git clone \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\[https://github.com/ayushmishra-18/HawkLink-Tactical.git](https://github.com/ayushmishra-18/HawkLink-Tactical.git)
-
+git clone [https://github.com/ayushmishra-18/HawkLink-Tactical.git](https://github.com/ayushmishra-18/HawkLink-Tactical.git)
 cd HawkLink-Tactical
 
 ```
@@ -223,13 +229,9 @@ cd HawkLink-Tactical
 
 ```
 
-cd commander\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_console
-
-
+cd commander_console
 
 flutter pub get
-
-
 
 flutter run -d windows
 
@@ -253,13 +255,9 @@ flutter run -d windows
 
 ```
 
-cd soldier\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\_app
-
-
+cd hawklink_client
 
 flutter pub get
-
-
 
 flutter run -d android
 
@@ -320,11 +318,10 @@ flutter run -d android
 * Sensors:
 
  	geolocator \& flutter\_compass  (Navigation)
-
  	camera  (AR \& BIO-scanning)
-noise\_meter  (Aciustic Detection)
-
- 	battery\_plus(Hardware monitering)
+  noise\_meter  (Aciustic Detection)
+ 	battery\_plus (Hardware monitering)
+  record (Black Box Audio)
 
 
 
@@ -373,6 +370,10 @@ noise\_meter  (Aciustic Detection)
 
 
 * ⚔️ Replaces error-prone voice radio commands
+
+
+
+* 🎙️ Black Box Audio: Real-time voice logging with telemetry.
 
 
 
