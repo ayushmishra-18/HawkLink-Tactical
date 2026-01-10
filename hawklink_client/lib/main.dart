@@ -1583,14 +1583,21 @@ class _UplinkScreenState extends State<UplinkScreen> with TickerProviderStateMix
         actions: [
           TextButton(
             onPressed: () => SystemNavigator.pop(),
-            child: const Text('EXIT'),
+            child: const Text('EXIT', style: TextStyle(color: Colors.white70)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              debugPrint("Warning: Biometric Bypassed by User");
+            },
+            child: const Text('OVERRIDE (DEV)', style: TextStyle(color: Colors.redAccent)),
           ),
           TextButton(
             onPressed: () {
               Navigator.pop(ctx);
               _requireBiometric();  // Retry
             },
-            child: const Text('RETRY'),
+            child: const Text('RETRY', style: TextStyle(color: Colors.blueAccent)),
           ),
         ],
       ),
@@ -1609,6 +1616,13 @@ class _UplinkScreenState extends State<UplinkScreen> with TickerProviderStateMix
           TextButton(
             onPressed: () => SystemNavigator.pop(),
             child: const Text('EXIT', style: TextStyle(color: Colors.white)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              debugPrint("Warning: Lockout Bypassed by User");
+            },
+            child: const Text('OVERRIDE (DEV)', style: TextStyle(color: Colors.redAccent)),
           ),
         ],
       ),

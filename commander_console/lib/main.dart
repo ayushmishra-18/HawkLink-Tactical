@@ -20,7 +20,6 @@ import 'sci_fi_ui.dart';
 import 'security/secure_channel.dart';
 import 'utils/encrypted_tile_provider.dart';
 import 'security/key_exchange.dart';
-import 'security/key_exchange.dart';
 import 'security/command_signer.dart';
 import 'security/input_validator.dart';
 import 'security/secure_logger.dart';
@@ -28,19 +27,23 @@ import 'security/rate_limiter.dart';
 import 'utils/voice_receiver.dart';
 import 'utils/formation_advisor.dart'; // AI ADVISOR
 import 'utils/voice_receiver.dart'; // VOICE PLAYER
-import 'models.dart'; // SHARED MODELS
+import 'utils/heatmap_engine.dart'; // THREAT HEATMAP
+import 'utils/heatmap_layer.dart'; // HEATMAP UI
+import 'screens/login_screen.dart';
+import 'models.dart';
 
 // --- CONFIGURATION ---
 const int kPort = 4444;
-// KEYS REMOVED: Replaced with ECDH Key Exchange
 
-// --- HARDENING CONSTANTS (Top Level) ---
+// --- HARDENING CONSTANTS ---
 const int kSignalWarning = 5;
 const int kSignalLost = 15;
 
-// --- DATA MODELS ---
-
-void main() { runApp(const CommanderApp()); }
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SecureLogger.init(); // Init encryption keys early
+  runApp(const CommanderApp());
+}
 
 class CommanderApp extends StatelessWidget {
   const CommanderApp({super.key});
@@ -52,7 +55,7 @@ class CommanderApp extends StatelessWidget {
         colorScheme: const ColorScheme.dark(primary: kSciFiCyan, surface: kSciFiDarkBlue),
         textTheme: const TextTheme(bodyMedium: TextStyle(fontFamily: 'Courier')),
       ),
-      home: const CommanderDashboard(),
+      home: const LoginScreen(), // SECURITY BARRIER
     );
   }
 }
@@ -75,6 +78,10 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   
   // VOICE
   final VoiceReceiver _voiceReceiver = VoiceReceiver();
+  
+  // HEATMAP
+  final HeatmapEngine _heatmapEngine = HeatmapEngine();
+  bool _showHeatmap = true;
 
   final TextEditingController _cmdController = TextEditingController();
   final Map<Socket, List<int>> _clientBuffers = {};
@@ -139,6 +146,9 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     
     // NEW: TEAM POSITION BROADCAST TIMER (Every 3s)
     Timer.periodic(const Duration(seconds: 3), (t) => _broadcastTeamPositions());
+    
+    // Start Heatmap Decay Engine
+    _heatmapEngine.start();
 
     // SFX Init
     _sfxPlayer.setReleaseMode(ReleaseMode.stop);
@@ -162,6 +172,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     _intelPlayer.dispose();
     _pulseController.dispose();
     _ekgController.dispose();
+    _heatmapEngine.stop();
     super.dispose();
   }
 
@@ -537,6 +548,21 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
       else if(j['type']=='HEAT_STRESS') {
         _log(j['sender'], "⚠️ HEAT STRESS ALERT");
         _playAlert('alert.mp3');
+      }
+      // THREAT EVENTS FOR HEATMAP
+      else if(j['type']=='GUNSHOT') {
+           _playAlert('alert.mp3'); 
+           _log(j['sender'], "💥 GUNSHOT DETECTED"); 
+           _heatmapEngine.addEvent('GUNSHOT', LatLng(j['lat'], j['lng']));
+      } 
+      else if(j['type']=='EXPLOSION') {
+           _playAlert('alert.mp3'); 
+           _log(j['sender'], "💥 EXPLOSION REPORTED");
+           _heatmapEngine.addEvent('EXPLOSION', LatLng(j['lat'], j['lng']));
+      }
+      else if(j['type']=='CONTACT') {
+           _log(j['sender'], "👁️ ENEMY CONTACT");
+           _heatmapEngine.addEvent('SIGHTING', LatLng(j['lat'], j['lng']));
       }
        else if(j['type']=='VOICE') {
          try {
@@ -971,6 +997,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                         children: [
                           TileLayer(urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', userAgentPackageName: 'com.hawklink.commander'),
                           if (_activeDangerZone.isNotEmpty) PolygonLayer(polygons: [Polygon(points: _activeDangerZone, color: kSciFiRed.withOpacity(0.2), borderColor: kSciFiRed, borderStrokeWidth: 2, isFilled: true)]),
+                          if (_showHeatmap) HeatmapLayer(engine: _heatmapEngine),
                           if (_isDrawingMode && _tempDrawPoints.isNotEmpty) ...[PolylineLayer(polylines: [Polyline(points: _tempDrawPoints, color: Colors.orange, strokeWidth: 2, isDotted: true)]), MarkerLayer(markers: _tempDrawPoints.map((p) => Marker(point: p, width: 10, height: 10, child: Container(decoration: const BoxDecoration(color: Colors.orange, shape: BoxShape.circle)))).toList())],
                           if (_showGrid) IgnorePointer(child: CustomPaint(size: Size.infinite, painter: TacticalGridPainter())),
                           if (_showTrails) PolylineLayer(polylines: _units.map((u) => Polyline(points: u.pathHistory, strokeWidth: 2.0, color: u.status=="SOS" ? kSciFiRed : kSciFiGreen, isDotted: true)).toList()),
@@ -1016,7 +1043,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                         Padding(padding: const EdgeInsets.all(8.0), child: SciFiButton(label: "CLOSE BOARD", icon: Icons.close, color: kSciFiCyan, onTap: () => setState(() => _showCasualtyBoard = false)))
                     ]))))),
                     
-                    Positioned(top: 20, right: 20, child: ConstrainedBox(constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height - 150, maxWidth: 100), child: SciFiPanel(showBg: true, width: 100, child: SingleChildScrollView(child: Column(children: [ const SizedBox(height: 10), if (_isDrawingMode) ...[SciFiButton(label: "OK", icon: Icons.check, color: kSciFiGreen, onTap: _deployCustomZone), const SizedBox(height: 8), SciFiButton(label: "X", icon: Icons.close, color: kSciFiRed, onTap: _toggleDrawingMode)] else ...[SciFiButton(label: "Z", icon: _activeDangerZone.isNotEmpty ? Icons.delete : Icons.edit_road, color: kSciFiRed, onTap: _activeDangerZone.isNotEmpty ? _clearZone : _toggleDrawingMode)], const Divider(color: Colors.white24, indent: 10, endIndent: 10), SciFiButton(label: "G", icon: Icons.grid_4x4, color: _showGrid ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _showGrid = !_showGrid)), const SizedBox(height: 8), SciFiButton(label: "R", icon: Icons.radar, color: _showRangeRings ? kSciFiCyan : Colors.grey, onTap: () => setState(() => _showRangeRings = !_showRangeRings)), const SizedBox(height: 8), SciFiButton(label: "T", icon: Icons.timeline, color: _showTrails ? kSciFiCyan : Colors.grey, onTap: () => setState(() => _showTrails = !_showTrails)), const SizedBox(height: 8), SciFiButton(label: "A", icon: Icons.straighten, color: _showTacticalMatrix ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _showTacticalMatrix = !_showTacticalMatrix)), const SizedBox(height: 8), SciFiButton(label: "CAS", icon: Icons.local_hospital, color: _showCasualtyBoard ? kSciFiRed : Colors.grey, onTap: () => setState(() => _showCasualtyBoard = !_showCasualtyBoard)), const Divider(color: Colors.white24, indent: 10, endIndent: 10), SciFiButton(label: "AI", icon: Icons.psychology, color: Colors.purpleAccent, onTap: _showAiAnalysis), const SizedBox(height: 8), if (_measurePoints.isNotEmpty && _isMeasureMode) SciFiButton(label: "CLR", icon: Icons.clear_all, color: Colors.red, onTap: _clearMeasurements) else SciFiButton(label: "M", icon: Icons.square_foot, color: _isMeasureMode ? Colors.purpleAccent : Colors.grey, onTap: _toggleMeasureMode), const SizedBox(height: 8), SciFiButton(label: "3D", icon: Icons.threed_rotation, color: _tilt > 0 ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _tilt = _tilt > 0 ? 0.0 : 0.6)), const SizedBox(height: 8), SciFiButton(label: "<", icon: Icons.rotate_left, color: Colors.white, onTap: () { setState(() => _rotation -= 45); _mapController.rotate(_rotation); }), const SizedBox(height: 8), SciFiButton(label: ">", icon: Icons.rotate_right, color: Colors.white, onTap: () { setState(() => _rotation += 45); _mapController.rotate(_rotation); }), const SizedBox(height: 10) ]))))),
+                    Positioned(top: 20, right: 20, child: ConstrainedBox(constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height - 150, maxWidth: 100), child: SciFiPanel(showBg: true, width: 100, child: SingleChildScrollView(child: Column(children: [ const SizedBox(height: 10), if (_isDrawingMode) ...[SciFiButton(label: "OK", icon: Icons.check, color: kSciFiGreen, onTap: _deployCustomZone), const SizedBox(height: 8), SciFiButton(label: "X", icon: Icons.close, color: kSciFiRed, onTap: _toggleDrawingMode)] else ...[SciFiButton(label: "Z", icon: _activeDangerZone.isNotEmpty ? Icons.delete : Icons.edit_road, color: kSciFiRed, onTap: _activeDangerZone.isNotEmpty ? _clearZone : _toggleDrawingMode)], const Divider(color: Colors.white24, indent: 10, endIndent: 10), SciFiButton(label: "G", icon: Icons.grid_4x4, color: _showGrid ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _showGrid = !_showGrid)), const SizedBox(height: 8), SciFiButton(label: "R", icon: Icons.radar, color: _showRangeRings ? kSciFiCyan : Colors.grey, onTap: () => setState(() => _showRangeRings = !_showRangeRings)), const SizedBox(height: 8), SciFiButton(label: "T", icon: Icons.timeline, color: _showTrails ? kSciFiCyan : Colors.grey, onTap: () => setState(() => _showTrails = !_showTrails)), const SizedBox(height: 8), SciFiButton(label: "A", icon: Icons.straighten, color: _showTacticalMatrix ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _showTacticalMatrix = !_showTacticalMatrix)), const SizedBox(height: 8), SciFiButton(label: "CAS", icon: Icons.local_hospital, color: _showCasualtyBoard ? kSciFiRed : Colors.grey, onTap: () => setState(() => _showCasualtyBoard = !_showCasualtyBoard)), const Divider(color: Colors.white24, indent: 10, endIndent: 10), SciFiButton(label: "AI", icon: Icons.psychology, color: Colors.purpleAccent, onTap: _showAiAnalysis), const SizedBox(height: 8), SciFiButton(label: "H", icon: Icons.local_fire_department, color: _showHeatmap ? Colors.orange : Colors.grey, onTap: () => setState(() => _showHeatmap = !_showHeatmap)), const SizedBox(height: 8), if (_measurePoints.isNotEmpty && _isMeasureMode) SciFiButton(label: "CLR", icon: Icons.clear_all, color: Colors.red, onTap: _clearMeasurements) else SciFiButton(label: "M", icon: Icons.square_foot, color: _isMeasureMode ? Colors.purpleAccent : Colors.grey, onTap: _toggleMeasureMode), const SizedBox(height: 8), SciFiButton(label: "3D", icon: Icons.threed_rotation, color: _tilt > 0 ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _tilt = _tilt > 0 ? 0.0 : 0.6)), const SizedBox(height: 8), SciFiButton(label: "<", icon: Icons.rotate_left, color: Colors.white, onTap: () { setState(() => _rotation -= 45); _mapController.rotate(_rotation); }), const SizedBox(height: 8), SciFiButton(label: ">", icon: Icons.rotate_right, color: Colors.white, onTap: () { setState(() => _rotation += 45); _mapController.rotate(_rotation); }), const SizedBox(height: 10) ]))))),
                     if (_isMeasureMode) Positioned(top: 20, left: 0, right: 0, child: Center(child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8), decoration: BoxDecoration(color: Colors.black87, border: Border.all(color: Colors.purpleAccent)), child: Text(_measurePoints.isEmpty ? "TAP START POINT" : "TAP TO ADD POINT", style: const TextStyle(color: Colors.purpleAccent, fontFamily: 'Orbitron', fontWeight: FontWeight.bold))))),
                     if (!_isDrawingMode) Positioned(bottom: 100, right: 20, child: SciFiPanel(showBg: true, borderColor: kSciFiCyan, child: IconButton(icon: const Icon(Icons.center_focus_strong, color: kSciFiCyan), onPressed: _recenterMap, tooltip: "RECENTER"))),
                     if (!_isDrawingMode) Positioned(bottom: 30, left: 20, right: 20, child: Center(child: SciFiPanel(showBg: true, borderColor: kSciFiGreen.withOpacity(0.5), child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8.0), child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(mainAxisSize: MainAxisSize.min, mainAxisAlignment: MainAxisAlignment.center, children: [SciFiButton(label: "RALLY", icon: Icons.flag, color: Colors.blue, onTap: () => setState(() => _placingWaypointType = "RALLY")), const SizedBox(width: 8), SciFiButton(label: "ENEMY", icon: Icons.warning, color: kSciFiRed, onTap: () => setState(() => _placingWaypointType = "ENEMY")), const SizedBox(width: 8), SciFiButton(label: "MED", icon: Icons.medical_services, color: Colors.white, onTap: () => setState(() => _placingWaypointType = "MED")), const SizedBox(width: 8), SciFiButton(label: "LZ", icon: Icons.flight_land, color: kSciFiGreen, onTap: () => setState(() => _placingWaypointType = "LZ")), const SizedBox(width: 20), SciFiButton(label: "DEL", icon: Icons.delete, color: _isDeleteWaypointMode ? Colors.red : Colors.orange, onTap: () => setState(() => _isDeleteWaypointMode = !_isDeleteWaypointMode))])))))),
