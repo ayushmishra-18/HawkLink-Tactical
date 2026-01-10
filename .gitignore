@@ -19,3 +19,19 @@ Windows
 *.sln
 *.suo
 *.user
+
+# Security / Certificates
+**/certs/
+**/*.pem
+**/*.key
+**/*.p12
+**/*.jks
+**/*.pfx
+**/*.cer
+**/*.crt
+
+# Environment files
+.env
+.env.local
+.env.*.local
+*.env
