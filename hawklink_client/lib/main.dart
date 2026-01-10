@@ -6,7 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math'; // Imports sin, cos, pi directly
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:encrypt/encrypt.dart' as enc;
@@ -32,6 +32,13 @@ import 'security/secure_logger.dart';
 import 'security/key_exchange.dart';
 import 'security/command_verifier.dart';
 import 'security/input_validator.dart';
+import 'security/biometric_gate.dart';
+import 'utils/encrypted_tile_provider.dart';
+import 'security/rate_limiter.dart';
+import 'utils/dead_reckoning_engine.dart';
+import 'utils/voice_comms.dart';
+import 'utils/triage_system.dart';
+import 'utils/voice_io.dart'; // VOICE PTT
 
 // --- CONFIGURATION ---
 // --- CONFIGURATION ---
@@ -75,7 +82,7 @@ class UplinkScreen extends StatefulWidget {
   State<UplinkScreen> createState() => _UplinkScreenState();
 }
 
-class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderStateMixin {
+class _UplinkScreenState extends State<UplinkScreen> with TickerProviderStateMixin {
   Socket? _socket;
   String _status = "DISCONNECTED";
   String _bioStatus = "BIO-LINK STANDBY";
@@ -135,6 +142,9 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
   AcousticSensor? _acousticSensor;
   bool _isGunshotDetected = false;
   bool _isMicPermissionGranted = false;
+  final VoiceIO _voiceIO = VoiceIO();
+  bool _isTalking = false; // PTT State
+
 
   // --- BLACK BOX RECORDER VARS (v5 API) ---
   final AudioRecorder _audioRecorder = AudioRecorder(); // Uses v5 API class
@@ -156,6 +166,22 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
 
   // --- UI STATE ---
   bool _isTopPanelVisible = true;
+  
+  // --- DEAD RECKONING ---
+  final DeadReckoningEngine _drEngine = DeadReckoningEngine();
+  bool _isDrActive = false;
+  
+  // --- VOICE COMMS  // VOICE
+  final VoiceComms _voiceComms = VoiceComms();
+
+  // TRIAGE
+  TriageCategory _triageStatus = TriageCategory.MINIMAL;
+  bool _isCasevacRequested = false;
+  
+  // AR & TEAM
+  List<SoldierUnit> _teammates = [];
+
+
 
   @override
   void initState() {
@@ -167,8 +193,12 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
 
     _initAcousticSensor();
     _initAcousticSensor();
+    _voiceIO.init();
     CommandVerifier.loadKey(); // Load Server Key for verification
     SecureLogger.init(); // Secure Logs
+    
+    // NEW: Require biometric authentication
+    _requireBiometric(); 
     
     // --- FATIGUE CHECKER ---
     _biometricTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -200,6 +230,26 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
             _heartRate = (_heartRate + variance).clamp(60, 180);
           }
         });
+      }
+    });
+
+    // --- DEAD RECKONING LISTENER ---
+    _drEngine.positionStream.listen((pos) {
+      if (_isDrActive && mounted) {
+        setState(() {
+          _myLocation = pos;
+          // Optionally smooth this or show confidence circle
+          if (_mapController.camera.zoom < 10) _mapController.move(_myLocation, 17);
+        });
+        // Still check for danger zones even in DR mode
+        if (_dangerZone.isNotEmpty) {
+           bool currentlyInDanger = _isPointInside(_myLocation, _dangerZone);
+           if (currentlyInDanger && !_isInDanger && !widget.isStealth) {
+             _tts.speak("Warning. DR Mode. Entering Restricted Zone!");
+             _handleGeofenceBreach();
+           }
+           _isInDanger = currentlyInDanger;
+        }
       }
     });
   }
@@ -259,7 +309,7 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("WAITING FOR POSITION FIX...")));
       return;
     }
-    Navigator.push(context, MaterialPageRoute(builder: (c) => ArCompassView(waypoints: _waypoints, myLocation: _myLocation)));
+    Navigator.push(context, MaterialPageRoute(builder: (c) => ArCompassView(waypoints: _waypoints, teammates: _teammates, myLocation: _myLocation)));
   }
 
   void _initTts() async {
@@ -279,6 +329,8 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     _acousticSensor?.stop();
     _sosController.dispose();
     _demoTimer?.cancel();
+    _gpsTimeoutTimer?.cancel();
+    _drEngine.stop();
     _tts.stop();
     super.dispose();
   }
@@ -301,16 +353,45 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     } catch (e) {}
   }
 
+  Timer? _gpsTimeoutTimer;
+
   Future<void> _startGpsTracking() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) return;
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) { permission = await Geolocator.requestPermission(); if (permission == LocationPermission.denied) return; }
 
-    const LocationSettings locationSettings = LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 2);
+    const LocationSettings locationSettings = LocationSettings(accuracy: LocationAccuracy.bestForNavigation, distanceFilter: 0);
 
     Geolocator.getPositionStream(locationSettings: locationSettings).listen((Position position) {
-      if (mounted) {
+      if (!mounted) return;
+      
+      // GPS Watchdog Reset
+      _gpsTimeoutTimer?.cancel();
+      _gpsTimeoutTimer = Timer(const Duration(seconds: 10), () {
+        if (mounted && !_isDrActive && _hasFix) {
+           setState(() => _isDrActive = true);
+           _drEngine.start(_myLocation);
+           if (!widget.isStealth) _tts.speak("GPS Lost. Engaging Dead Reckoning.");
+           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(backgroundColor: Colors.orange, content: Text("GPS LOST - DR MODE ACTIVE")));
+        }
+      });
+
+      // Accuracy Check
+      if (position.accuracy > 50.0) {
+         // Poor signal, stick to DR if already active, or switch?
+         // For now, let's treat poor accuracy as "keep DR if active", else "accept but warn"
+      } else {
+         // Good signal
+         if (_isDrActive) {
+           _drEngine.stop();
+           setState(() => _isDrActive = false);
+           if (!widget.isStealth) _tts.speak("GPS Restored.");
+         }
+         _drEngine.syncPosition(LatLng(position.latitude, position.longitude));
+      }
+
+      if (!_isDrActive) {
         setState(() {
           _myLocation = LatLng(position.latitude, position.longitude);
           _hasFix = true;
@@ -384,9 +465,18 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
 
   void _handleIncomingPacket(List<int> data) async {
     _incomingBuffer.addAll(data);
+    
+    // 0. RATE LIMIT CHECK
+    // If not authenticated yet or spamming too hard
+    if (_socket != null && !RateLimiter.isAllowed(_socket!)) {
+       // Just return / drop. 
+       // Optionally we could disconnect if this persists.
+       return; 
+    }
+
     try {
-      final str = utf8.decode(_incomingBuffer).trim();
-      if (str.isEmpty) return;
+       final str = utf8.decode(_incomingBuffer).trim();
+       if (str.isEmpty) return;
       
       // HANDSHAKE
       if (_secureChannel == null) {
@@ -489,6 +579,64 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
     }
     else if (json['type'] == 'CHAT') {
       _onMessageReceived(json);
+    }
+    // --- TEAM POSITION UPDATE (AR) ---
+    else if (json['type'] == 'TEAM_POS') {
+      List<dynamic> list = json['data'];
+      setState(() {
+        _teammates = list.where((u) => u['id'] != _idController.text.toUpperCase()).map((u) => SoldierUnit(
+          id: u['id'],
+          location: LatLng(u['lat'], u['lng']),
+          role: u['role'],
+          status: u['status'],
+          lastSeen: DateTime.now()
+        )).toList();
+      });
+    }
+    // --- VOICE (PTT) ---
+    else if (json['type'] == 'VOICE') {
+      try {
+        // If not me (echo), play it
+        if (json['sender'] != _idController.text.toUpperCase()) {
+           final audioBytes = base64Decode(json['content']);
+           _voiceIO.playAudio(audioBytes);
+           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Row(children: [const Icon(Icons.record_voice_over, color: Colors.white), const SizedBox(width:8), Text("${json['sender']} SPEAKING...", style: const TextStyle(fontWeight: FontWeight.bold))],),
+              backgroundColor: kSciFiDarkBlue, duration: const Duration(seconds: 2),
+           ));
+        }
+      } catch (e) {
+        debugPrint("VOICE RX ERROR: $e");
+      }
+
+
+  }
+}
+
+  // --- PTT LOGIC ---
+  Future<void> _startTalking() async {
+    setState(() => _isTalking = true);
+    await _voiceIO.startRecording();
+    if (!widget.isStealth) _tts.speak("Channel Open");
+  }
+
+  Future<void> _stopTalking() async {
+    setState(() => _isTalking = false);
+    final file = await _voiceIO.stopRecording();
+    
+    if (file != null) {
+      if (await file.exists()) {
+        final bytes = await file.readAsBytes();
+        final b64 = base64Encode(bytes);
+        
+        _sendPacket({
+          'type': 'VOICE',
+          'sender': _idController.text.toUpperCase(),
+          'content': b64
+        });
+        if (!widget.isStealth) _tts.speak("Transmitted");
+        await file.delete();
+      }
     }
   }
 
@@ -707,13 +855,15 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
         'lng': _myLocation.longitude,
         'head': _heading,
         'bat': bat,
-        'state': state,
+        'state': _isCasevacRequested ? "CASEVAC" : state,
         'bpm': _heartRate,
         'spo2': _spO2,
         'bp': _bp,
         'temp': _temp,
         'heat': _isHeatStress,
-        'dr': false
+        'dr': _isDrActive,
+        'triage_color': TriageSystem.getColor(_triageStatus).value.toRadixString(16),
+        'casevac': _isCasevacRequested
       });
     } catch (e) {}
   }
@@ -993,11 +1143,27 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
                 },
               ),
               children: [
-                TileLayer(urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', userAgentPackageName: 'com.hawklink.soldier'),
+                TileLayer(
+                  urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                  tileProvider: EncryptedTileProvider(),
+                  userAgentPackageName: 'com.hawklink.soldier'
+                ),
                 PolygonLayer(polygons: [if (_dangerZone.isNotEmpty) Polygon(points: _dangerZone, color: kSciFiRed.withOpacity(0.3), borderColor: kSciFiRed, borderStrokeWidth: 4, isFilled: true)]),
 
                 MarkerLayer(markers: [
-                  if (_hasFix) Marker(point: _myLocation, width: 40, height: 40, child: Transform.rotate(angle: (_heading * (pi / 180)), child: Icon(Icons.navigation, color: primaryColor, size: 35))),
+                  if (_hasFix || _isDrActive) Marker(
+                    point: _myLocation, 
+                    width: 40, 
+                    height: 40, 
+                    child: Transform.rotate(
+                      angle: (_heading * (pi / 180)), 
+                      child: Icon(
+                        _isDrActive ? Icons.explore_off : Icons.navigation, 
+                        color: _isDrActive ? Colors.orange : primaryColor, 
+                        size: 35
+                      )
+                    )
+                  ),
                   ..._targetMarkers,
                   if (_commanderObjective != null) Marker(point: _commanderObjective!, width: 50, height: 50, child: Column(children: [Container(padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2), color: Colors.black, child: const Text("OBJ", style: TextStyle(color: Colors.yellowAccent, fontSize: 10, fontWeight: FontWeight.bold))), const Icon(Icons.flag, color: Colors.yellowAccent, size: 30)])),
                   ..._waypoints.map((wp) => Marker(
@@ -1300,25 +1466,149 @@ class _UplinkScreenState extends State<UplinkScreen> with SingleTickerProviderSt
                       Text(_bioStatus, style: TextStyle(color: _isBioActive ? kSciFiGreen : Colors.grey, fontSize: 10, fontFamily: 'Courier')),
                       const SizedBox(height: 8),
 
-                      GestureDetector(
-                          onLongPress: _activateSOS,
-                          child: Container(
-                              height: 50,
-                              decoration: BoxDecoration(
-                                  color: isSOS ? kSciFiRed.withOpacity(0.8) : kSciFiRed.withOpacity(0.2),
-                                  border: Border.all(color: kSciFiRed, width: 2),
-                                  borderRadius: BorderRadius.circular(4)
-                              ),
-                              child: Center(
-                                  child: Text(isSOS ? "SOS ACTIVE" : "HOLD SOS", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier', letterSpacing: 2))
-                              )
-                          )
-                      )
+                      const SizedBox(height: 8),
+
+                      // --- COMBINED ACTION ROW (SOS & PTT) ---
+                      Row(
+                        children: [
+                          // SOS BUTTON (Left, Smaller)
+                          Expanded(
+                            flex: 1,
+                            child: GestureDetector(
+                                onLongPress: _activateSOS,
+                                child: Container(
+                                    height: 50,
+                                    decoration: BoxDecoration(
+                                        color: isSOS ? kSciFiRed.withOpacity(0.8) : kSciFiRed.withOpacity(0.1),
+                                        border: Border.all(color: kSciFiRed, width: 2),
+                                        borderRadius: BorderRadius.circular(4),
+                                        boxShadow: [if (isSOS) BoxShadow(color: kSciFiRed.withOpacity(0.5), blurRadius: 10)]
+                                    ),
+                                    child: Center(
+                                        child: Text(isSOS ? "SOS" : "HOLD SOS", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Courier', letterSpacing: 1))
+                                    )
+                                )
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          
+                          // PTT BUTTON (Right, Main)
+                          Expanded(
+                            flex: 2,
+                            child: GestureDetector(
+                              onLongPressStart: (_) => _startTalking(),
+                              onLongPressEnd: (_) => _stopTalking(),
+                              child: Container(
+                                height: 50,
+                                decoration: BoxDecoration(
+                                    color: _isTalking ? kSciFiCyan : kSciFiDarkBlue,
+                                    border: Border.all(color: kSciFiCyan, width: 2),
+                                    borderRadius: BorderRadius.only(topRight: Radius.circular(12), bottomLeft: Radius.circular(12)),
+                                    boxShadow: [if (_isTalking) BoxShadow(color: kSciFiCyan.withOpacity(0.5), blurRadius: 15, spreadRadius: 2)]
+                                ),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(_isTalking ? Icons.mic : Icons.mic_none, color: _isTalking ? Colors.black : kSciFiCyan),
+                                    const SizedBox(width: 8),
+                                    Text(_isTalking ? "ON AIR" : "PUSH TO TALK", style: TextStyle(color: _isTalking ? Colors.black : kSciFiCyan, fontWeight: FontWeight.bold, fontFamily: 'Orbitron', letterSpacing: 1.5))
+                                  ],
+                                ),
+                            ),
+                          ),
+                        ),
+                        ],
+                      ),
                     ]),
                   ),
                 ),
               ],
             ),
+          ),
+        ],
+      ),
+      floatingActionButton: Column(mainAxisAlignment: MainAxisAlignment.end, children: [
+         GestureDetector(
+           onLongPress: _startTalking,
+           onLongPressUp: _stopTalking,
+           onLongPressCancel: _stopTalking, // Handle cancel too
+           child: Container(
+             margin: const EdgeInsets.only(bottom: 15),
+             width: 70, height: 70,
+             decoration: BoxDecoration(
+               color: _isTalking ? kSciFiRed : kSciFiCyan.withOpacity(0.2),
+               shape: BoxShape.circle,
+               border: Border.all(color: _isTalking ? Colors.white : kSciFiCyan, width: 2),
+               boxShadow: [BoxShadow(color: _isTalking ? Colors.redAccent : kSciFiCyan, blurRadius: 10)]
+             ),
+             child: Icon(_isTalking ? Icons.mic : Icons.mic_none, color: Colors.white, size: 30),
+           ),
+         ),
+      ]),
+    );
+  }
+  // --- BIOMETRIC AUTH METHODS ---
+  Future<void> _requireBiometric() async {
+    // Check if biometric is available
+    final canAuth = await BiometricGate.canAuthenticate();
+    
+    if (!canAuth) {
+      // Device doesn't support biometrics - allow anyway
+      debugPrint('Biometric auth not available on this device');
+      return;
+    }
+    
+    // Show authentication dialog
+    try {
+      final authenticated = await BiometricGate.authenticate();
+      
+      if (!authenticated) {
+        // Auth failed - close app
+        _showAuthFailedDialog();
+      }
+    } on PlatformException catch (e) {
+      if (e.code == 'LOCKED_OUT') {
+        _showLockoutDialog(e.message ?? 'Too many failed attempts');
+      }
+    }
+  }
+
+  void _showAuthFailedDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Authentication Failed'),
+        content: Text('Biometric authentication is required to access HawkLink.\n\nReason: ${BiometricGate.lastError}'),
+        actions: [
+          TextButton(
+            onPressed: () => SystemNavigator.pop(),
+            child: const Text('EXIT'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _requireBiometric();  // Retry
+            },
+            child: const Text('RETRY'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showLockoutDialog(String message) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.red.shade900,
+        title: const Text('SECURITY LOCKOUT', style: TextStyle(color: Colors.white)),
+        content: Text(message, style: const TextStyle(color: Colors.white)),
+        actions: [
+          TextButton(
+            onPressed: () => SystemNavigator.pop(),
+            child: const Text('EXIT', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),

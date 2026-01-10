@@ -43,3 +43,10 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Security / Certificates
+certs/
+*.pem
+*.key
+*.p12
+*.jks

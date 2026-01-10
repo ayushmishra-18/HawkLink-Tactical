@@ -8,9 +8,10 @@ import 'sci_fi_ui.dart';
 
 class ArCompassView extends StatefulWidget {
   final List<TacticalWaypoint> waypoints;
+  final List<SoldierUnit> teammates;
   final LatLng myLocation;
 
-  const ArCompassView({super.key, required this.waypoints, required this.myLocation});
+  const ArCompassView({super.key, required this.waypoints, required this.teammates, required this.myLocation});
 
   @override
   State<ArCompassView> createState() => _ArCompassViewState();
@@ -122,6 +123,44 @@ class _ArCompassViewState extends State<ArCompassView> {
               ),
             );
           }),
+          
+          // 3b. AR Teammates
+          ...widget.teammates.map((u) {
+            double bearing = _getBearing(widget.myLocation, u.location);
+            double delta = bearing - _heading;
+            if (delta > 180) delta -= 360;
+            if (delta < -180) delta += 360;
+
+            bool isVisible = delta.abs() < 40;
+            double screenW = MediaQuery.of(context).size.width;
+            double leftPos = (screenW / 2) + (delta * (screenW / 60));
+            double dist = _distance.as(LengthUnit.Meter, widget.myLocation, u.location);
+
+            if (!isVisible) return const SizedBox();
+
+            return Positioned(
+              left: leftPos - 35,
+              top: MediaQuery.of(context).size.height / 2.5, // Slightly lower than waypoints
+              child: Column(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: BoxDecoration(
+                       color: Colors.black54,
+                       shape: BoxShape.circle,
+                       border: Border.all(color: Colors.cyanAccent, width: 2)
+                    ),
+                    child: Icon(_getRoleIcon(u.role), color: Colors.cyanAccent, size: 28),
+                  ),
+                  const SizedBox(height: 4),
+                  Text("${u.id}\n${dist.toInt()}m",
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold, fontSize: 10, backgroundColor: Colors.black45)
+                  )
+                ],
+              ),
+            );
+          }),
 
           // 4. Back Button & Heading Tape
           Positioned(
@@ -150,5 +189,9 @@ class _ArCompassViewState extends State<ArCompassView> {
   }
   Color _getColor(String t) {
     switch(t){case "RALLY":return Colors.blue; case "ENEMY":return kSciFiRed; case "MED":return Colors.white; default:return kSciFiGreen;}
+  }
+  
+  IconData _getRoleIcon(String r) { 
+    switch(r){ case "MEDIC": return Icons.medical_services; case "SCOUT": return Icons.visibility; case "SNIPER": return Icons.gps_fixed; case "ENGINEER": return Icons.build; default: return Icons.shield; } 
   }
 }

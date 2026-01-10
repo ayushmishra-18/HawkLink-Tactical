@@ -42,6 +42,10 @@ dependencies:
   flutter_secure_storage: ^9.0.0
   logger: ^2.0.2
   basic_utils: 5.7.0
+  local_auth: ^2.3.0
+  sensors_plus: ^6.1.0
+  vector_math: ^2.1.40
+  audioplayers: ^6.0.0
 
 # OVERRIDE EXPLANATION:
 # The error `RecordMethodChannelPlatformInterface.startStream` is caused by

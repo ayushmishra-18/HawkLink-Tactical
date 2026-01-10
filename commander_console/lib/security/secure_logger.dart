@@ -63,6 +63,18 @@ class SecureLogger {
     return logs;
   }
 
+  /// Public helper for encrypting arbitrary binary data (e.g. images, audio)
+  static Future<Uint8List> encryptData(Uint8List data) async {
+    if (!_initialized) await init();
+    return _encrypt(data);
+  }
+
+  /// Public helper for decrypting arbitrary binary data
+  static Future<Uint8List> decryptData(Uint8List data) async {
+    if (!_initialized) await init();
+    return _decrypt(data);
+  }
+
   // AES-GCM Encryption
   static Uint8List _encrypt(Uint8List plaintext) {
     if (_logKey == null) throw Exception("Log Key not loaded");

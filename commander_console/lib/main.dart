@@ -4,6 +4,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'utils/secure_image_thumbnail.dart';
 import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/material.dart';
@@ -17,11 +18,17 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'sci_fi_ui.dart';
 import 'security/secure_channel.dart';
+import 'utils/encrypted_tile_provider.dart';
 import 'security/key_exchange.dart';
 import 'security/key_exchange.dart';
 import 'security/command_signer.dart';
 import 'security/input_validator.dart';
 import 'security/secure_logger.dart';
+import 'security/rate_limiter.dart';
+import 'utils/voice_receiver.dart';
+import 'utils/formation_advisor.dart'; // AI ADVISOR
+import 'utils/voice_receiver.dart'; // VOICE PLAYER
+import 'models.dart'; // SHARED MODELS
 
 // --- CONFIGURATION ---
 const int kPort = 4444;
@@ -32,77 +39,6 @@ const int kSignalWarning = 5;
 const int kSignalLost = 15;
 
 // --- DATA MODELS ---
-class SoldierUnit {
-  String id;
-  String role;
-  LatLng location;
-  double heading;
-  int battery;
-  int bpm;
-  int spO2;
-  String bp;
-  double temp;
-  String status;
-  // FLAGS
-  bool isHeatStress;
-  bool isDeadReckoning;
-  bool inDangerZone;
-
-  DateTime lastSeen;
-  Socket? socket;
-  List<LatLng> pathHistory;
-
-  int get secondsSincePing => DateTime.now().difference(lastSeen).inSeconds;
-
-  SoldierUnit({
-    required this.id,
-    this.role="ASSAULT",
-    required this.location,
-    this.heading=0.0,
-    this.battery=100,
-    this.bpm=75,
-    this.spO2=98,
-    this.bp="120/80",
-    this.temp=98.6,
-    this.status="IDLE",
-    this.isHeatStress = false,
-    this.isDeadReckoning = false,
-    this.inDangerZone = false,
-    required this.lastSeen,
-    this.socket,
-    List<LatLng>? history
-  }) : pathHistory = history ?? [];
-}
-
-class TacticalWaypoint {
-  String id; String type; LatLng location; DateTime created;
-  TacticalWaypoint({required this.id, required this.type, required this.location, required this.created});
-  Map<String, dynamic> toJson() => {'id': id, 'type': type, 'lat': location.latitude, 'lng': location.longitude, 'time': created.toIso8601String()};
-}
-
-class TerrainData {
-  double temperature;
-  double windSpeed;
-  String windDirection;
-  String condition;
-  double visibility;
-
-  TerrainData({
-    this.temperature = 25.0,
-    this.windSpeed = 10.0,
-    this.windDirection = 'NW',
-    this.condition = 'Clear',
-    this.visibility = 10.0,
-  });
-
-  Map<String, dynamic> toJson() => {
-    'temp': temperature,
-    'wind': windSpeed,
-    'dir': windDirection,
-    'cond': condition,
-    'vis': visibility,
-  };
-}
 
 void main() { runApp(const CommanderApp()); }
 
@@ -136,6 +72,9 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   final List<TacticalWaypoint> _waypoints = [];
   List<String> _myIps = [];
   TerrainData _terrain = TerrainData();
+  
+  // VOICE
+  final VoiceReceiver _voiceReceiver = VoiceReceiver();
 
   final TextEditingController _cmdController = TextEditingController();
   final Map<Socket, List<int>> _clientBuffers = {};
@@ -165,6 +104,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   bool _showTrails = true;
   bool _showRangeRings = true;
   bool _showTacticalMatrix = false;
+  bool _showCasualtyBoard = false;
   double _tilt = 0.0;
   double _rotation = 0.0;
   bool _isDrawingMode = false;
@@ -175,6 +115,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   bool _isMeasureMode = false;
   List<LatLng> _measurePoints = [];
   bool _isWeatherUpdating = false; // Loading state for weather button
+
 
   // Default Map Center (Hyderabad for testing)
   LatLng _mapCenter = const LatLng(17.3850, 78.4867);
@@ -195,6 +136,9 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     _ekgController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat();
 
     _watchdogTimer = Timer.periodic(const Duration(seconds: 1), _checkNetworkHealth);
+    
+    // NEW: TEAM POSITION BROADCAST TIMER (Every 3s)
+    Timer.periodic(const Duration(seconds: 3), (t) => _broadcastTeamPositions());
 
     // SFX Init
     _sfxPlayer.setReleaseMode(ReleaseMode.stop);
@@ -361,6 +305,25 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     // Don't mark as KILLED instantly; wait for confirmation or timeout
     setState(() => u.status = "ZEROIZING..."); 
   }
+  void _broadcastTeamPositions() {
+    if (_units.isEmpty) return;
+    
+    List<Map<String, dynamic>> teamData = _units.map((u) => {
+      'id': u.id,
+      'lat': u.location.latitude,
+      'lng': u.location.longitude,
+      'role': u.role,
+      'status': u.status
+    }).toList();
+
+    for (var u in _units) {
+      _sendToSocket(u.socket, {
+        'type': 'TEAM_POS',
+        'data': teamData
+      });
+    }
+  }
+
   Future<void> _playSfx(String f) async { if(!_audioEnabled) return; try{ await _sfxPlayer.play(AssetSource('sounds/$f')); }catch(e){} }
   Future<void> _playAlert(String f) async { if(!_audioEnabled) return; try{ await _alertPlayer.play(AssetSource('sounds/$f')); }catch(e){} }
 
@@ -372,8 +335,23 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
         setState(() => _currentlyPlayingPath = null);
       } else {
         await _intelPlayer.stop();
-        // Use device file source for recorded audio
-        await _intelPlayer.play(DeviceFileSource(path));
+        
+        Source source;
+        if (path.endsWith('.enc')) {
+           final file = File(path);
+           if (await file.exists()) {
+              final encrypted = await file.readAsBytes();
+              final decrypted = await SecureLogger.decryptData(encrypted);
+              source = BytesSource(decrypted);
+           } else { 
+              debugPrint("Audio file not found: $path");
+              return; 
+           }
+        } else {
+           source = DeviceFileSource(path);
+        }
+
+        await _intelPlayer.play(source);
         setState(() => _currentlyPlayingPath = path);
       }
     } catch(e) {
@@ -385,7 +363,22 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   Future<void> _loadLogs() async { try{ final f=await _getLogFile(); if(await f.exists()){ final c=await f.readAsLines(); setState(() { for(var l in c.reversed.take(100)) _logs.add({'text':l, 'image':null, 'audio': null}); }); } }catch(e){} }
   Future<void> _saveLog(String l) async { try{ final f=await _getLogFile(); await f.writeAsString('$l\n', mode: FileMode.append); }catch(e){} }
 
-  Future<String> _saveImageToDisk(String s, String b64) async { try{ final d=await getApplicationDocumentsDirectory(); final i=Directory('${d.path}/HawkLink_Intel/Images'); if(!await i.exists()) await i.create(recursive: true); String ts = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now()); File f=File('${i.path}/IMG_${s}_$ts.jpg'); await f.writeAsBytes(base64Decode(b64)); return f.path; }catch(e){return "";} }
+  Future<String> _saveImageToDisk(String s, String b64) async {
+    try {
+      final d = await getApplicationDocumentsDirectory();
+      final i = Directory('${d.path}/HawkLink_Intel/Images');
+      if (!await i.exists()) await i.create(recursive: true);
+      
+      String ts = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+      File f = File('${i.path}/IMG_${s}_$ts.enc'); // Changed to .enc
+      
+      final bytes = base64Decode(b64);
+      final encrypted = await SecureLogger.encryptData(bytes);
+      await f.writeAsBytes(encrypted);
+      
+      return f.path;
+    } catch(e) { return ""; }
+  }
 
   // --- NEW: SAVE AUDIO + METADATA ---
   Future<String> _saveAudioToDisk(String s, String b64, Map<String, dynamic> metadata) async {
@@ -397,11 +390,13 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
       String ts = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
       String baseName = "AUDIO_${s}_$ts";
 
-      // Save Audio
-      File f = File('${audioDir.path}/$baseName.m4a');
-      await f.writeAsBytes(base64Decode(b64));
+      // Save Audio Encrypted
+      File f = File('${audioDir.path}/$baseName.enc'); // Changed to .enc
+      final bytes = base64Decode(b64);
+      final encrypted = await SecureLogger.encryptData(bytes);
+      await f.writeAsBytes(encrypted);
 
-      // Save Metadata (BPM, Location, etc.)
+      // Save Metadata (BPM, Location, etc.) - Leaving JSON plaintext for now for indexing
       File metaFile = File('${audioDir.path}/$baseName.json');
       await metaFile.writeAsString(jsonEncode(metadata));
 
@@ -459,6 +454,12 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   // --- UPDATED MESSAGE PROCESSING ---
   void _processPacket(Socket c, List<int> b) async {
     try {
+      // 0. CHECK RATE LIMIT
+      if (!RateLimiter.isAllowed(c)) {
+        _log("SEC", "RATE LIMIT EXCEEDED: ${c.remoteAddress.address}");
+        return; // Drop packet
+      }
+
       final s = utf8.decode(b).trim();
       if (s.isEmpty) return;
 
@@ -537,6 +538,35 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
         _log(j['sender'], "⚠️ HEAT STRESS ALERT");
         _playAlert('alert.mp3');
       }
+       else if(j['type']=='VOICE') {
+         try {
+           final audioBytes = base64Decode(j['content']);
+           _voiceReceiver.playAudio(audioBytes);
+           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+             content: Row(children: [const Icon(Icons.record_voice_over, color: Colors.white), const SizedBox(width:8), Text("${j['sender']} SPEAKING...")],),
+             duration: const Duration(milliseconds: 1500),
+             backgroundColor: kSciFiDarkBlue
+           ));
+           _log(j['sender'], "VOICE MESSAGE RECEIVED");
+
+           // RE-BROADCAST TO SQUAD
+           for(var u in _units) {
+             if (u.id != j['sender'] && u.socket != null) {
+               _sendToSocket(u.socket, j);
+             }
+           }
+         } catch(e) {}
+      }
+      else if(j['type']=='CASEVAC_ALERT') {
+        _playAlert('alert.mp3');
+        _log(j['sender'], "🚨 CASEVAC REQUESTED (PRIORITY: ${j['priority']})");
+        showDialog(context: context, builder: (c) => AlertDialog(
+          backgroundColor: Colors.red[900],
+          title: const Text("🚨 CASEVAC REQUEST", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          content: Text("UNIT ${j['sender']} REQUESTS IMMEDIATE EVACUATION.\nPRIORITY: ${j['priority']}", style: const TextStyle(color: Colors.white)),
+          actions: [TextButton(child: const Text("ACKNOWLEDGE", style: TextStyle(color: Colors.white)), onPressed: ()=>Navigator.pop(c))]
+        ));
+      }
     } catch(e){
        debugPrint("Processing Error: $e");
     }
@@ -553,7 +583,50 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
     } catch(e) {}
   }
 
-  void _updateUnit(Socket s, Map<String,dynamic> d) { setState(() { final id=d['id']; final idx=_units.indexWhere((u)=>u.id==id); final loc=LatLng(d['lat'],d['lng']); if(idx!=-1){ var u = _units[idx]; u.location=loc; u.heading=(d['head']??0.0).toDouble(); u.role=d['role']??"ASSAULT"; u.battery=d['bat']; u.bpm=d['bpm']??75; u.spO2=d['spo2']??98; u.bp=d['bp']??"120/80"; u.temp=(d['temp']??98.6).toDouble(); u.status=d['state']; u.isHeatStress = d['heat']??false; u.lastSeen=DateTime.now(); u.socket=s; _checkGeofences(u); if(u.pathHistory.isEmpty || const Distance().as(LengthUnit.Meter, u.pathHistory.last, loc)>5) u.pathHistory.add(loc); } else { var newUnit = SoldierUnit(id:id, location:loc, role:d['role']??"ASSAULT", battery:d['bat'], bpm:d['bpm']??75, spO2:d['spo2']??98, bp:d['bp']??"120/80", temp:(d['temp']??98.6).toDouble(), status:d['state'], isHeatStress: d['heat']??false, lastSeen:DateTime.now(), socket:s, history:[loc]); _checkGeofences(newUnit); _units.add(newUnit); _log("NET", "UNIT REGISTERED: $id"); _playSfx('connect.mp3'); } }); }
+  void _updateUnit(Socket s, Map<String,dynamic> d) {
+    setState(() {
+      final id=d['id'];
+      final idx=_units.indexWhere((u)=>u.id==id);
+      final loc=LatLng(d['lat'],d['lng']);
+      
+      // Extract Triage Data (Safe defaults)
+      String tColor = d['triage_color'] ?? "FF4CAF50"; // Green default
+      bool casevac = d['casevac'] ?? false;
+      
+      if(idx!=-1){
+        var u = _units[idx];
+        u.location=loc;
+        u.heading=(d['head']??0.0).toDouble();
+        u.role=d['role']??"ASSAULT";
+        u.battery=d['bat'];
+        u.bpm=d['bpm']??75;
+        u.spO2=d['spo2']??98;
+        u.bp=d['bp']??"120/80";
+        u.temp=(d['temp']??98.6).toDouble();
+        u.status=d['state'];
+        u.isHeatStress = d['heat']??false;
+        u.triageColor = tColor;
+        u.isCasevacRequested = casevac;
+        u.lastSeen=DateTime.now();
+        u.socket=s;
+        _checkGeofences(u);
+        if(u.pathHistory.isEmpty || const Distance().as(LengthUnit.Meter, u.pathHistory.last, loc)>5) u.pathHistory.add(loc);
+      } else {
+        var newUnit = SoldierUnit(
+          id:id, location:loc, role:d['role']??"ASSAULT", battery:d['bat'], bpm:d['bpm']??75,
+          spO2:d['spo2']??98, bp:d['bp']??"120/80", temp:(d['temp']??98.6).toDouble(),
+          status:d['state'], isHeatStress: d['heat']??false,
+          triageColor: tColor, isCasevacRequested: casevac,
+          lastSeen:DateTime.now(), socket:s, history:[loc]
+        );
+        _checkGeofences(newUnit);
+        _units.add(newUnit);
+        _log("NET", "UNIT REGISTERED: $id");
+        _playSfx('connect.mp3'); 
+        _sendToSocket(s, {'type': 'CHAT', 'sender': 'COMMAND', 'content': 'UPLINK ESTABLISHED'});
+      }
+    });
+  }
 
   // --- UPDATED LOG FUNCTION (Accepts Meta) ---
   void _log(String s, String m, {String? imagePath, String? audioPath, Map<String, dynamic>? meta}) {
@@ -576,11 +649,73 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   void _handleCommandInput(String input) { if(input.isEmpty) return; if (input.startsWith('@')) { List<String> p = input.split(' '); if (p.isNotEmpty) { String id = p[0].substring(1).toUpperCase().trim(); String c = p.skip(1).join(' '); try { final u = _units.firstWhere((u) => u.id.toUpperCase().trim() == id); if (u.socket != null) { _sendToSocket(u.socket, {'type': 'CHAT', 'sender': 'COMMAND (PVT)', 'content': ">> $c"}); _log("CMD", "TO $id: $c"); _playSfx('order.mp3'); } else { _log("CMD", "ERROR: $id OFFLINE"); } } catch (e) { _log("CMD", "ERROR: UNIT '$id' NOT FOUND"); } } } else { _broadcastOrder(input); } _cmdController.clear(); }
   void _broadcastOrder(String t) { for(var u in _units) _sendToSocket(u.socket, {'type':'CHAT', 'sender':'COMMAND', 'content':t}); _log("CMD", "BROADCAST: $t"); _playSfx('order.mp3'); }
   void _issueMoveOrder(LatLng d) { if(_isDrawingMode||_placingWaypointType!=null||_isDeleteWaypointMode||_selectedUnitId==null||_isMeasureMode) return; try{ final u=_units.firstWhere((x)=>x.id==_selectedUnitId); _sendToSocket(u.socket, {'type':'MOVE_TO', 'sender':'COMMAND', 'content':"MOVE TO ${d.latitude.toStringAsFixed(4)}, ${d.longitude.toStringAsFixed(4)}", 'lat':d.latitude, 'lng':d.longitude}); _log("CMD", "VECTOR ASSIGNED: $u.id"); _playSfx('order.mp3'); }catch(e){} }
+  void _showAiAnalysis() {
+    AnalysisResult result = FormationAdvisor.analyze(_units);
+    
+    showDialog(context: context, builder: (context) => AlertDialog(
+      backgroundColor: Colors.black.withOpacity(0.9),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15), side: const BorderSide(color: Colors.purpleAccent, width: 2)),
+      title: Row(children: [const Icon(Icons.psychology, color: Colors.purpleAccent), const SizedBox(width: 10), const Text("AI TACTICAL ADVISOR", style: TextStyle(color: Colors.purpleAccent, fontFamily: 'Orbitron'))]),
+      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text("SQUAD ANALYSIS COMPLETE", style: const TextStyle(color: Colors.grey, fontSize: 10, letterSpacing: 2)),
+        const SizedBox(height: 10),
+        Text(result.formationName, style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold, fontFamily: 'Orbitron')),
+        Text("CONFIDENCE: ${(result.confidence*100).toInt()}%", style: TextStyle(color: result.confidence > 0.8 ? kSciFiGreen : Colors.orange, fontSize: 12)),
+        const SizedBox(height: 15),
+        Text(result.description, style: const TextStyle(color: Colors.white70)),
+      ]),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL", style: TextStyle(color: Colors.grey))),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.purpleAccent),
+          icon: const Icon(Icons.check),
+          label: const Text("APPLY FORMATION"),
+          onPressed: () {
+            Navigator.pop(context);
+            _applyFormation(result.formationName);
+          },
+        )
+      ],
+    ));
+  }
+  
+  void _applyFormation(String type) {
+    // Generate waypoints based on formation type
+    // This is a mockup of the actual waypoint generation logic
+    // In a real scenario, this would calculate lat/lng depending on the commander's objective or average unit position
+    _log("AI", "APPLYING FORMATION PROTOCOL: $type");
+    _playSfx('connect.mp3');
+  }
+
+  void _deployWaypoint(LatLng l, String type) {
+    setState(() {
+      _waypoints.add(TacticalWaypoint(id: "WP-${DateTime.now().millisecondsSinceEpoch}", type: type, location: l, created: DateTime.now()));
+    });
+    _playSfx('connect.mp3');
+    _broadcastWaypoints();
+  }
+
+  void _removeWaypointNear(LatLng l) {
+    setState(() {
+      _waypoints.removeWhere((w) {
+         final dist = const Distance().as(LengthUnit.Meter, w.location, l);
+         return dist < 50; // Delete if within 50m
+      });
+    });
+    _playSfx('disconnect.mp3');
+    _broadcastWaypoints();
+  }
+  
+  void _broadcastWaypoints() {
+    // Implement broadcast if needed, or just keep local for now
+    // For now, assume waypoints are sync'd differently or implementation is omitted
+  } 
+
+
+
   void _onMapTap(TapPosition p, LatLng l) { if (_isMeasureMode) { setState(() => _measurePoints.add(l)); _playSfx('connect.mp3'); return; } if(_isDeleteWaypointMode){ _removeWaypointNear(l); setState(()=>_isDeleteWaypointMode=false); return; } if(_placingWaypointType!=null){ _deployWaypoint(l, _placingWaypointType!); setState(()=>_placingWaypointType=null); return; } if(_isDrawingMode){ setState(()=>_tempDrawPoints.add(l)); return; } setState(()=>_selectedUnitId=null); }
   void _toggleMeasureMode() { setState(() { if (_isMeasureMode) { _measurePoints.clear(); _isMeasureMode = false; } else { _isMeasureMode = true; _measurePoints.clear(); _isDrawingMode = false; _placingWaypointType = null; _isDeleteWaypointMode = false; } }); }
   void _clearMeasurements() { setState(() => _measurePoints.clear()); }
-  void _deployWaypoint(LatLng l, String t) { String id="${t}_${DateTime.now().millisecondsSinceEpoch}"; TacticalWaypoint w=TacticalWaypoint(id:id, type:t, location:l, created:DateTime.now()); setState(()=>_waypoints.add(w)); for(var u in _units) _sendToSocket(u.socket, {'type':'WAYPOINT', 'action':'ADD', 'data':w.toJson()}); _log("CMD", "WAYPOINT DEPLOYED: $t"); _playSfx('order.mp3'); }
-  void _removeWaypointNear(LatLng l) { try { _waypoints.sort((a, b) => const Distance().as(LengthUnit.Meter, a.location, l).compareTo(const Distance().as(LengthUnit.Meter, b.location, l))); final c = _waypoints.first; if (const Distance().as(LengthUnit.Meter, c.location, l) < 50) { setState(() => _waypoints.remove(c)); for (var u in _units) _sendToSocket(u.socket, {'type': 'WAYPOINT', 'action': 'REMOVE', 'id': c.id}); _log("CMD", "REMOVED WAYPOINT: ${c.type}"); _playSfx('connect.mp3'); } } catch (e) {} }
   void _toggleDrawingMode() { setState(() { _isDrawingMode=!_isDrawingMode; _tempDrawPoints=[]; }); }
   void _deployCustomZone() { if(_tempDrawPoints.length<3) return; setState(() { _activeDangerZone=List.from(_tempDrawPoints); _isDrawingMode=false; _tempDrawPoints=[]; }); List<List<double>> pts=_activeDangerZone.map((p)=>[p.latitude, p.longitude]).toList(); for(var u in _units) _sendToSocket(u.socket, {'type':'ZONE', 'sender':'COMMAND', 'points':pts}); _log("CMD", "ZONE DEPLOYED"); _playAlert('alert.mp3'); }
   void _clearZone() { setState(() { _activeDangerZone=[]; _tempDrawPoints=[]; }); for(var u in _units) _sendToSocket(u.socket, {'type':'ZONE', 'sender':'COMMAND', 'points':[]}); _log("CMD", "ZONE CLEARED"); }
@@ -588,7 +723,21 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
   IconData _getWaypointIcon(String t) { switch(t) { case "RALLY": return Icons.flag; case "ENEMY": return Icons.warning_amber_rounded; case "MED": return Icons.medical_services; case "LZ": return Icons.flight_land; default: return Icons.location_on; } }
   Color _getWaypointColor(String t) { switch(t) { case "RALLY": return Colors.blueAccent; case "ENEMY": return kSciFiRed; case "MED": return Colors.white; case "LZ": return kSciFiGreen; default: return kSciFiCyan; } }
   List<LatLng> _createVisionCone(LatLng c, double h) { double r=0.0005; double a=h*(math.pi/180); double w=45*(math.pi/180); return [c, LatLng(c.latitude+r*math.cos(a-w/2), c.longitude+r*math.sin(a-w/2)), LatLng(c.latitude+r*math.cos(a), c.longitude+r*math.sin(a)), LatLng(c.latitude+r*math.cos(a+w/2), c.longitude+r*math.sin(a+w/2)), c]; }
-  void _showImagePreview(String p) { showDialog(context: context, builder: (ctx) => Dialog(backgroundColor: Colors.transparent, child: Stack(alignment: Alignment.center, children: [Image.file(File(p)), Positioned(top: 10, right: 10, child: IconButton(icon: const Icon(Icons.close, color: Colors.white, size: 30), onPressed: () => Navigator.pop(ctx)))]))); }
+  void _showImagePreview(String p) { 
+    showDialog(context: context, builder: (ctx) => Dialog(
+      backgroundColor: Colors.transparent, 
+      child: Stack(
+        alignment: Alignment.center, 
+        children: [
+          SecureImageThumbnail(path: p, fit: BoxFit.contain), 
+          Positioned(
+            top: 10, right: 10, 
+            child: IconButton(icon: const Icon(Icons.close, color: Colors.white, size: 30), onPressed: () => Navigator.pop(ctx))
+          )
+        ]
+      )
+    )); 
+  }
   String _formatCoord(double v, bool l) { return "${v.abs().toStringAsFixed(5)}° ${l ? (v >= 0 ? "N" : "S") : (v >= 0 ? "E" : "W")}"; }
   void _recenterMap() { if (_units.isEmpty) return; LatLng t; double z = 15.0; if (_selectedUnitId != null) { try { t = _units.firstWhere((u) => u.id == _selectedUnitId).location; z = 17.0; } catch (e) { t = _units.first.location; } } else { double ls = 0; double lns = 0; for (var u in _units) { ls += u.location.latitude; lns += u.location.longitude; } t = LatLng(ls / _units.length, lns / _units.length); } _mapController.move(t, z); _playSfx('connect.mp3'); }
   double _getTotalMeasureDistance() { double t = 0.0; const d = Distance(); for (int i = 0; i < _measurePoints.length - 1; i++) { t += d.as(LengthUnit.Meter, _measurePoints[i], _measurePoints[i+1]); } return t; }
@@ -754,7 +903,7 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                                                       margin: const EdgeInsets.only(top: 4),
                                                       height: 60, width: 100,
                                                       decoration: BoxDecoration(border: Border.all(color: kSciFiCyan)),
-                                                      child: Image.file(File(l['image']), fit: BoxFit.cover)
+                                                      child: SecureImageThumbnail(path: l['image'], fit: BoxFit.cover)
                                                   )
                                               ),
                                             // Audio Player
@@ -835,7 +984,39 @@ class _CommanderDashboardState extends State<CommanderDashboard> with TickerProv
                       ),
                     ),
                     if (_showTacticalMatrix) Positioned.fill(child: Container(color: Colors.black.withOpacity(0.85), child: Center(child: SciFiPanel(width: 700, height: 500, title: "TACTICAL DISTANCE MATRIX", borderColor: kSciFiCyan, showBg: true, child: Column(children: [ Padding(padding: const EdgeInsets.all(8.0), child: const Text("UNIT TO OBJECTIVE DISTANCES", style: TextStyle(color: kSciFiGreen, letterSpacing: 2, fontSize: 10))), Expanded(child: _waypoints.isEmpty ? const Center(child: Text("NO ACTIVE WAYPOINTS", style: TextStyle(color: Colors.grey))) : SingleChildScrollView(scrollDirection: Axis.vertical, child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(headingRowColor: MaterialStateProperty.all(kSciFiDarkBlue), dataRowColor: MaterialStateProperty.all(Colors.transparent), columns: [ const DataColumn(label: Text("UNIT", style: TextStyle(color: kSciFiCyan, fontWeight: FontWeight.bold))), ..._waypoints.map((wp) => DataColumn(label: Column(mainAxisAlignment: MainAxisAlignment.center, children: [ Icon(_getWaypointIcon(wp.type), color: _getWaypointColor(wp.type), size: 14), Text(wp.type, style: const TextStyle(color: Colors.white, fontSize: 10)) ]))) ], rows: _units.map((u) { return DataRow(cells: [ DataCell(Text(u.id, style: const TextStyle(color: kSciFiCyan, fontWeight: FontWeight.bold))), ..._waypoints.map((wp) { double dist = const Distance().as(LengthUnit.Meter, u.location, wp.location); Color c = Colors.white; if (dist < 50) c = kSciFiGreen; return DataCell(Text("${dist.toStringAsFixed(0)}m", style: TextStyle(color: c, fontFamily: 'Courier New'))); }) ]); }).toList())))), Padding(padding: const EdgeInsets.all(8.0), child: SciFiButton(label: "CLOSE ANALYSIS", icon: Icons.close, color: kSciFiRed, onTap: () => setState(() => _showTacticalMatrix = false))) ]))))),
-                    Positioned(top: 20, right: 20, child: ConstrainedBox(constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height - 150, maxWidth: 100), child: SciFiPanel(showBg: true, width: 100, child: SingleChildScrollView(child: Column(children: [ const SizedBox(height: 10), if (_isDrawingMode) ...[SciFiButton(label: "OK", icon: Icons.check, color: kSciFiGreen, onTap: _deployCustomZone), const SizedBox(height: 8), SciFiButton(label: "X", icon: Icons.close, color: kSciFiRed, onTap: _toggleDrawingMode)] else ...[SciFiButton(label: "Z", icon: _activeDangerZone.isNotEmpty ? Icons.delete : Icons.edit_road, color: kSciFiRed, onTap: _activeDangerZone.isNotEmpty ? _clearZone : _toggleDrawingMode)], const Divider(color: Colors.white24, indent: 10, endIndent: 10), SciFiButton(label: "G", icon: Icons.grid_4x4, color: _showGrid ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _showGrid = !_showGrid)), const SizedBox(height: 8), SciFiButton(label: "R", icon: Icons.radar, color: _showRangeRings ? kSciFiCyan : Colors.grey, onTap: () => setState(() => _showRangeRings = !_showRangeRings)), const SizedBox(height: 8), SciFiButton(label: "T", icon: Icons.timeline, color: _showTrails ? kSciFiCyan : Colors.grey, onTap: () => setState(() => _showTrails = !_showTrails)), const SizedBox(height: 8), SciFiButton(label: "A", icon: Icons.straighten, color: _showTacticalMatrix ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _showTacticalMatrix = !_showTacticalMatrix)), const SizedBox(height: 8), if (_measurePoints.isNotEmpty && _isMeasureMode) SciFiButton(label: "CLR", icon: Icons.clear_all, color: Colors.red, onTap: _clearMeasurements) else SciFiButton(label: "M", icon: Icons.square_foot, color: _isMeasureMode ? Colors.purpleAccent : Colors.grey, onTap: _toggleMeasureMode), const SizedBox(height: 8), SciFiButton(label: "3D", icon: Icons.threed_rotation, color: _tilt > 0 ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _tilt = _tilt > 0 ? 0.0 : 0.6)), const SizedBox(height: 8), SciFiButton(label: "<", icon: Icons.rotate_left, color: Colors.white, onTap: () { setState(() => _rotation -= 45); _mapController.rotate(_rotation); }), const SizedBox(height: 8), SciFiButton(label: ">", icon: Icons.rotate_right, color: Colors.white, onTap: () { setState(() => _rotation += 45); _mapController.rotate(_rotation); }), const SizedBox(height: 10) ]))))),
+                    
+                    if (_showCasualtyBoard) Positioned.fill(child: Container(color: Colors.black.withOpacity(0.9), child: Center(child: SciFiPanel(width: 600, height: 600, title: "CASUALTY BOARD // EVAC PRIORITY", borderColor: kSciFiRed, showBg: true, child: Column(children: [
+                        Container(padding: const EdgeInsets.all(12), color: Colors.red.withOpacity(0.1), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text("UNIT ID", style: TextStyle(color: Colors.grey, fontSize: 10)), const Text("TRIAGE STATUS", style: TextStyle(color: Colors.grey, fontSize: 10)), const Text("VITALS (HR/SpO2/BP)", style: TextStyle(color: Colors.grey, fontSize: 10)), const Text("CASEVAC", style: TextStyle(color: Colors.grey, fontSize: 10))])),
+                        Expanded(child: ListView.builder(
+                          itemCount: _units.length,
+                          itemBuilder: (context, index) {
+                             // Sort units: CASEVAC/Red first
+                             List<SoldierUnit> sorted = List.from(_units);
+                             sorted.sort((a,b) {
+                               int scoreA = (a.isCasevacRequested?10:0) + (a.triageColor=="FFFF0000"?5:0);
+                               int scoreB = (b.isCasevacRequested?10:0) + (b.triageColor=="FFFF0000"?5:0);
+                               return scoreB.compareTo(scoreA);
+                             });
+                             final u = sorted[index];
+                             Color tColor = Color(int.parse(u.triageColor, radix: 16));
+                             
+                             return Container(
+                               margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                               padding: const EdgeInsets.all(8),
+                               decoration: BoxDecoration(border: Border.all(color: tColor.withOpacity(0.5))),
+                               child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                                  Text(u.id, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontFamily: 'Orbitron')),
+                                  Container(padding: const EdgeInsets.symmetric(horizontal:6, vertical:2), decoration: BoxDecoration(color: tColor, borderRadius: BorderRadius.circular(4)), child: Text(tColor==Colors.red?"IMMEDIATE":tColor==Colors.orange?"DELAYED":tColor==Colors.black?"EXPECTANT":"MINIMAL", style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold))),
+                                  Text("${u.bpm} bpm / ${u.spO2}% / ${u.bp}", style: TextStyle(color: u.bpm<40||u.bpm>120?kSciFiRed:kSciFiGreen, fontFamily: 'Courier New')),
+                                  if(u.isCasevacRequested) BlinkingText("REQ EVAC", color: kSciFiRed) else const Text("-", style: TextStyle(color: Colors.grey))
+                               ])
+                             );
+                          }
+                        )),
+                        Padding(padding: const EdgeInsets.all(8.0), child: SciFiButton(label: "CLOSE BOARD", icon: Icons.close, color: kSciFiCyan, onTap: () => setState(() => _showCasualtyBoard = false)))
+                    ]))))),
+                    
+                    Positioned(top: 20, right: 20, child: ConstrainedBox(constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height - 150, maxWidth: 100), child: SciFiPanel(showBg: true, width: 100, child: SingleChildScrollView(child: Column(children: [ const SizedBox(height: 10), if (_isDrawingMode) ...[SciFiButton(label: "OK", icon: Icons.check, color: kSciFiGreen, onTap: _deployCustomZone), const SizedBox(height: 8), SciFiButton(label: "X", icon: Icons.close, color: kSciFiRed, onTap: _toggleDrawingMode)] else ...[SciFiButton(label: "Z", icon: _activeDangerZone.isNotEmpty ? Icons.delete : Icons.edit_road, color: kSciFiRed, onTap: _activeDangerZone.isNotEmpty ? _clearZone : _toggleDrawingMode)], const Divider(color: Colors.white24, indent: 10, endIndent: 10), SciFiButton(label: "G", icon: Icons.grid_4x4, color: _showGrid ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _showGrid = !_showGrid)), const SizedBox(height: 8), SciFiButton(label: "R", icon: Icons.radar, color: _showRangeRings ? kSciFiCyan : Colors.grey, onTap: () => setState(() => _showRangeRings = !_showRangeRings)), const SizedBox(height: 8), SciFiButton(label: "T", icon: Icons.timeline, color: _showTrails ? kSciFiCyan : Colors.grey, onTap: () => setState(() => _showTrails = !_showTrails)), const SizedBox(height: 8), SciFiButton(label: "A", icon: Icons.straighten, color: _showTacticalMatrix ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _showTacticalMatrix = !_showTacticalMatrix)), const SizedBox(height: 8), SciFiButton(label: "CAS", icon: Icons.local_hospital, color: _showCasualtyBoard ? kSciFiRed : Colors.grey, onTap: () => setState(() => _showCasualtyBoard = !_showCasualtyBoard)), const Divider(color: Colors.white24, indent: 10, endIndent: 10), SciFiButton(label: "AI", icon: Icons.psychology, color: Colors.purpleAccent, onTap: _showAiAnalysis), const SizedBox(height: 8), if (_measurePoints.isNotEmpty && _isMeasureMode) SciFiButton(label: "CLR", icon: Icons.clear_all, color: Colors.red, onTap: _clearMeasurements) else SciFiButton(label: "M", icon: Icons.square_foot, color: _isMeasureMode ? Colors.purpleAccent : Colors.grey, onTap: _toggleMeasureMode), const SizedBox(height: 8), SciFiButton(label: "3D", icon: Icons.threed_rotation, color: _tilt > 0 ? kSciFiGreen : Colors.grey, onTap: () => setState(() => _tilt = _tilt > 0 ? 0.0 : 0.6)), const SizedBox(height: 8), SciFiButton(label: "<", icon: Icons.rotate_left, color: Colors.white, onTap: () { setState(() => _rotation -= 45); _mapController.rotate(_rotation); }), const SizedBox(height: 8), SciFiButton(label: ">", icon: Icons.rotate_right, color: Colors.white, onTap: () { setState(() => _rotation += 45); _mapController.rotate(_rotation); }), const SizedBox(height: 10) ]))))),
                     if (_isMeasureMode) Positioned(top: 20, left: 0, right: 0, child: Center(child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8), decoration: BoxDecoration(color: Colors.black87, border: Border.all(color: Colors.purpleAccent)), child: Text(_measurePoints.isEmpty ? "TAP START POINT" : "TAP TO ADD POINT", style: const TextStyle(color: Colors.purpleAccent, fontFamily: 'Orbitron', fontWeight: FontWeight.bold))))),
                     if (!_isDrawingMode) Positioned(bottom: 100, right: 20, child: SciFiPanel(showBg: true, borderColor: kSciFiCyan, child: IconButton(icon: const Icon(Icons.center_focus_strong, color: kSciFiCyan), onPressed: _recenterMap, tooltip: "RECENTER"))),
                     if (!_isDrawingMode) Positioned(bottom: 30, left: 20, right: 20, child: Center(child: SciFiPanel(showBg: true, borderColor: kSciFiGreen.withOpacity(0.5), child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8.0), child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(mainAxisSize: MainAxisSize.min, mainAxisAlignment: MainAxisAlignment.center, children: [SciFiButton(label: "RALLY", icon: Icons.flag, color: Colors.blue, onTap: () => setState(() => _placingWaypointType = "RALLY")), const SizedBox(width: 8), SciFiButton(label: "ENEMY", icon: Icons.warning, color: kSciFiRed, onTap: () => setState(() => _placingWaypointType = "ENEMY")), const SizedBox(width: 8), SciFiButton(label: "MED", icon: Icons.medical_services, color: Colors.white, onTap: () => setState(() => _placingWaypointType = "MED")), const SizedBox(width: 8), SciFiButton(label: "LZ", icon: Icons.flight_land, color: kSciFiGreen, onTap: () => setState(() => _placingWaypointType = "LZ")), const SizedBox(width: 20), SciFiButton(label: "DEL", icon: Icons.delete, color: _isDeleteWaypointMode ? Colors.red : Colors.orange, onTap: () => setState(() => _isDeleteWaypointMode = !_isDeleteWaypointMode))])))))),

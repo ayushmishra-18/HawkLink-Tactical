@@ -3,6 +3,7 @@ class InputValidator {
   // --- GENERAL VALIDATION ---
   static bool validatePacket(Map<String, dynamic> json) {
     if (!json.containsKey('type')) return false;
+    if (json['type'] is! String) return false; // Strict type check
 
     // Sanitize string fields common to all packets
     if (json.containsKey('id') && !_isValidId(json['id'])) return false;
