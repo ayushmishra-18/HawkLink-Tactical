@@ -220,6 +220,6 @@ Contributions welcome! Please read our security guidelines before submitting:
 ---
 
 <p align="center">
-  <b>Built with 🛡️ Security-First Design</b><br>
+  <b>Built with 🛡️ Security-First Design by Ayush Mishra/b><br>
   <i>"Protecting Those Who Protect Us"</i>
 </p>
