@@ -209,7 +209,6 @@ Contributions welcome! Please read our security guidelines before submitting:
 3. **Code Review**: All PRs undergo security audit before merge
 
 ---
----
 
 ## **📧 Contact**
 
@@ -220,6 +219,6 @@ Contributions welcome! Please read our security guidelines before submitting:
 ---
 
 <p align="center">
-  <b>Built with 🛡️ Security-First Design by Ayush Mishra/b><br>
+  <b>Built with 🛡️ Security-First Design by Ayush Mishra </b><br>
   <i>"Protecting Those Who Protect Us"</i>
 </p>
